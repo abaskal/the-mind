@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Mind</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main id="app">
+    <section id="setup" class="panel">
+      <h1>The Mind</h1>
+      <p class="tagline">Play every card from 1 to 100 in ascending order &mdash; without talking.</p>
+      <label>Players (you + bots)
+        <select id="players">
+          <option value="2">2 players &mdash; 12 levels</option>
+          <option value="3" selected>3 players &mdash; 10 levels</option>
+          <option value="4">4 players &mdash; 8 levels</option>
+        </select>
+      </label>
+      <label>Bot pace
+        <select id="pace">
+          <option value="260">Relaxed</option>
+          <option value="180" selected>Normal</option>
+          <option value="110">Quick</option>
+        </select>
+      </label>
+      <button id="start" class="primary">Start game</button>
+      <details>
+        <summary>How to play</summary>
+        <ul>
+          <li>Each level <em>n</em>, everyone gets <em>n</em> cards.</li>
+          <li>Play your lowest card when you feel it's next. No turns, no talking.</li>
+          <li>If a card is played while someone holds a lower one, those lower cards are discarded and the team loses a life.</li>
+          <li>Throwing star: everyone discards their lowest card face up (all must agree).</li>
+          <li>Rewards: star after levels 2, 5, 8 &mdash; life after levels 3, 6, 9 (max 5 lives, 3 stars).</li>
+          <li>Controls: click your lowest card or press <kbd>Space</kbd>. Press <kbd>S</kbd> to propose a star.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section id="table" class="hidden">
+      <header class="status">
+        <div>Level <strong id="level"></strong>/<span id="maxLevel"></span></div>
+        <div id="lives" title="Lives"></div>
+        <div id="stars" title="Throwing stars"></div>
+        <button id="quit" class="ghost">Quit</button>
+      </header>
+
+      <div id="bots" class="bots"></div>
+
+      <div class="center">
+        <div class="pile-wrap">
+          <div id="pile" class="card big empty">&ndash;</div>
+          <div id="pileOwner" class="owner"></div>
+        </div>
+        <div class="side">
+          <div class="label">Played</div>
+          <div id="history" class="history"></div>
+          <div class="label">Discarded</div>
+          <div id="discarded" class="history discarded"></div>
+        </div>
+      </div>
+
+      <div id="message" class="message"></div>
+
+      <div class="me">
+        <div class="label">Your hand</div>
+        <div id="hand" class="hand"></div>
+        <div class="actions">
+          <button id="playBtn" class="primary">Play lowest (Space)</button>
+          <button id="starBtn">Propose star (S)</button>
+          <button id="nextBtn" class="primary hidden">Next level</button>
+          <button id="againBtn" class="primary hidden">Play again</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="game.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
