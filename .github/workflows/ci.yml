@@ -17,3 +17,20 @@ jobs:
         with:
           node-version: 20
       - run: npm test
+
+  # Local Supabase Postgres (Docker): migrations, pgTAP tests (RLS, schema, cleanup) and the rooms rules on Postgres.
+  db-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.0
+      - run: supabase db start
+      - run: supabase test db
+      - run: npm run test:integration

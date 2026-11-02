@@ -10,13 +10,13 @@ The app is `index.html` plus the rules engine in `engine/mind-engine.js`. The en
 
 ## Tests
 
-You need Node 20 or newer. There are no dependencies to install.
+You need Node 20 or newer. `npm test` needs nothing installed.
 
 ```bash
-npm test        # runs node --test: test/*.test.js and the legacy game.test.js
+npm test        # runs node --test: test/*.test.js, test/*.test.mjs and the legacy game.test.js
 ```
 
-CI runs the same command on every push and pull request (`.github/workflows/ci.yml`).
+CI runs the same command on every push and pull request (`.github/workflows/ci.yml`). A second CI job, `db-tests`, tests the online backend on a local Supabase database. To run those tests yourself you need Docker and `npm install`; see [docs/online/BACKEND.md](docs/online/BACKEND.md).
 
 ## Rules
 
@@ -40,6 +40,9 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 | `engine/mind-engine.js` | Rules engine with no DOM code. Sets `window.Mind` in the browser and exports the same API from Node `require()` |
 | `test/engine.test.js` | Characterization tests for the engine rules: `npm test` |
 | `test/engine-loading.test.js` | Checks that the engine loads with `require()`, as a classic script, and as an ES module |
-| `docs/online/` | Requirements for online multiplayer |
+| `supabase/` | Online backend (Supabase): migrations, RLS, the `rooms` Edge Function and pgTAP tests. See `docs/online/BACKEND.md` |
+| `test/rooms.test.mjs` | Lobby rules of the `rooms` function, with an in-memory repository |
+| `test/rooms-postgres.integration.test.mjs` | The same rules on a local Supabase database: `npm run test:integration` |
+| `docs/online/` | Requirements for online multiplayer, and `BACKEND.md` |
 
 **Legacy (not used by `index.html`):** `game.js`, `app.js`, `style.css`, `index.previous.html` and `game.test.js` belong to an older version of the game. `game.test.js` still runs with `npm test`.
