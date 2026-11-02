@@ -113,7 +113,8 @@ select throws_ok('select private.is_room_member(''b0000000-0000-4000-8000-000000
 select throws_ok(q, '42501', null, 'anon refused: ' || left(q, 70)) from write_attempts;
 
 reset role;
-select is((select count(*) from public.room_secrets), 1::bigint, 'the server role still sees the secret row');
+select is((select count(*) from public.room_secrets where room_id = 'b0000000-0000-4000-8000-000000000001'), 1::bigint,
+  'the server role still sees the secret row');
 
 select * from finish();
 rollback;

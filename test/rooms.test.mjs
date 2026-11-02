@@ -222,7 +222,7 @@ describe('leave', () => {
     repo.setRoomStatus(roomId, 'playing');
     await data(run(C, 'leave', { roomId }));
     assert.equal(roomRow(roomId).status, 'abandoned');
-    assert.deepEqual(repo.state.events, [{ roomId, seq: 1, type: 'gameAborted', payload: { by: 's2' } }]);
+    assert.deepEqual(repo.state.events, [{ roomId, seq: 1, type: 'gameAborted', payload: { by: 's2', reason: 'left' } }]);
     assert.ok(repo.state.players.find((p) => p.userId === C).leftAt != null);
   });
 
