@@ -418,3 +418,7 @@ enabled = true
 # MIND-03: lobby actions. The gateway rejects requests without a valid JWT; the function then resolves the user.
 [functions.rooms]
 verify_jwt = true
+
+# MIND-04: gameplay actions. Same as rooms: the gateway rejects requests without a valid JWT.
+[functions.room-action]
+verify_jwt = true

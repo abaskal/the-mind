@@ -18,7 +18,7 @@ jobs:
           node-version: 20
       - run: npm test
 
-  # Local Supabase Postgres (Docker): migrations, pgTAP tests (RLS, schema, cleanup) and the rooms rules on Postgres.
+  # Local Supabase (Docker): migrations, pgTAP tests, the rooms rules on Postgres, and the Edge Functions over HTTP.
   db-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -31,6 +31,11 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: 2.122.0
-      - run: supabase db start
+      # Postgres, Auth, PostgREST, the gateway and the edge runtime (serves supabase/functions); nothing else is needed.
+      - run: supabase start -x realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,logflare,vector,supavisor
       - run: supabase test db
       - run: npm run test:integration
+      - name: npm run test:e2e (two players over HTTP)
+        run: |
+          eval "$(supabase status -o env | grep -E '^(API_URL|ANON_KEY)=')"
+          SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$ANON_KEY" npm run test:e2e

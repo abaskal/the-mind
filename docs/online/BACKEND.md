@@ -1,26 +1,38 @@
 # The Mind Online — Backend
 
 Supabase backend for online play: Postgres with row-level security, anonymous Auth, Realtime and Edge Functions.
-This page covers the **lobby** (MIND-03). Gameplay (`room-action`) is added in MIND-04.
+It covers the **lobby** (`rooms`, MIND-03) and **gameplay** (`room-action`, MIND-04).
 
 The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply. The ones that shape this backend:
 
+- **I1:** the server is the only referee. Order, mistakes, lives, stars, levels and votes are decided by the engine running in `room-action`.
 - **I2:** nobody reads another player's hidden cards.
 - **I3:** clients never write to tables directly; every write goes through an Edge Function.
+- **I4:** there is one rules engine, `engine/mind-engine.js`. The functions use a byte-identical copy (see below), and no rule lives in SQL.
 - **I6:** every state change is atomic and committed with a version compare-and-swap, timed by the Postgres clock.
 - **I8:** no secrets in the repository.
 
 | Path | What it is |
 |---|---|
-| `supabase/config.toml` | Local stack config. Anonymous sign-ins are on; `[functions.rooms] verify_jwt = true` |
+| `supabase/config.toml` | Local stack config. Anonymous sign-ins are on; `verify_jwt = true` for `rooms` and `room-action` |
 | `supabase/migrations/20261102100000_rooms.sql` | Tables, RLS, Realtime publication, cleanup job |
+| `supabase/migrations/20261102200000_room_action.sql` | `load_room_for_action` and `commit_room_action`, service role only |
 | `supabase/functions/rooms/index.ts` | Deno entry point of the `rooms` function. It only wires auth and Postgres |
+| `supabase/functions/room-action/index.ts` | Deno entry point of the `room-action` function. It only wires the engine, auth and the RPC repository |
 | `supabase/functions/_shared/rooms-rules.mjs` | Lobby business rules, runtime-agnostic, behind a small repository interface |
-| `supabase/functions/_shared/rooms-postgres-repo.mjs` | Repository on Postgres (postgres.js), used by the function |
-| `supabase/functions/_shared/rooms-memory-repo.mjs` | In-memory repository for the Node tests |
-| `supabase/functions/_shared/rooms-http.mjs` | HTTP layer: CORS, JSON, error mapping |
-| `supabase/tests/database/*.test.sql` | pgTAP tests: RLS, schema, cleanup |
-| `test/rooms.test.mjs`, `test/rooms-postgres.integration.test.mjs` | Node tests: rules (in-memory) and rules on a real database |
+| `supabase/functions/_shared/rooms-postgres-repo.mjs` | Lobby repository on Postgres (postgres.js), used by `rooms` |
+| `supabase/functions/_shared/rooms-memory-repo.mjs` | In-memory lobby repository for the Node tests |
+| `supabase/functions/_shared/rooms-http.mjs` | HTTP layer of `rooms`: error mapping |
+| `supabase/functions/_shared/room-action.mjs` | Gameplay pipeline, runtime-agnostic: load → engine → commit, retries, rate limit |
+| `supabase/functions/_shared/room-action-rpc-repo.mjs` | Gameplay repository: the two SQL functions over PostgREST RPC, as the service role |
+| `supabase/functions/_shared/room-action-memory-repo.mjs` | In-memory gameplay repository for the Node tests |
+| `supabase/functions/_shared/room-action-http.mjs` | HTTP layer of `room-action`: `Server-Timing`, error mapping |
+| `supabase/functions/_shared/http.mjs` | Shared CORS and JSON helpers |
+| `supabase/functions/_shared/mind-engine.js` | **Generated** copy of `engine/mind-engine.js` (`npm run sync-engine`) |
+| `supabase/tests/database/*.test.sql` | pgTAP tests: RLS, schema, cleanup, gameplay commits |
+| `test/rooms.test.mjs`, `test/rooms-postgres.integration.test.mjs` | Node tests: lobby rules (in-memory) and on a real database |
+| `test/room-action.test.mjs`, `test/room-action-privacy.test.mjs` | Node tests: gameplay pipeline and the privacy scan |
+| `test/room-action.e2e.test.mjs`, `test/engine-sync.test.js` | Two players over HTTP; the engine copy is identical |
 
 ## Schema
 
@@ -92,11 +104,9 @@ Public event log.
 
 Sliding-window rate limits, keyed on `(user_id, action, created_at)`. It lives in the unexposed `private` schema.
 
-### Events so far
+### Events
 
-| Type | Payload | When |
-|---|---|---|
-| `gameAborted` | `{ "by": "s2" }` | A player left a `playing` room, so the room became `abandoned`. `by` is that player's seat id |
+The full list of event types and their public payloads is under [`room-action` → Events](#events).
 
 ## Row-level security and privileges
 
@@ -112,6 +122,7 @@ RLS is **on for every table** (`public` and `private`). Clients only ever read.
 - **No `INSERT`, `UPDATE`, `DELETE` or `TRUNCATE` privilege and no write policy for `anon` or `authenticated`, on any table (I3).** The migration revokes everything and then grants only the `SELECT`s above. So it does not depend on the project's auto-expose default.
 - `private.is_room_member(room_id)` is `security definer`, so the membership check is not itself filtered by `room_players`' policy, which would make it recursive. A player who has left (`left_at` set) is no longer a member.
 - `private.is_room_member`, `private.cleanup_rooms` and `private.set_updated_at` live in the `private` schema, which the Data API does not expose. Only `authenticated` may execute `is_room_member`, because policies need it.
+- `public.load_room_for_action` and `public.commit_room_action` are `security definer` with an empty `search_path`. `EXECUTE` is revoked from `public`, `anon` and `authenticated`, and **only `service_role`** may run them. The `room-action` function calls them with the service-role key.
 
 ## Realtime
 
@@ -155,7 +166,7 @@ Content-Type: application/json
   - If the user is in a `playing` room, the answer is `ALREADY_IN_GAME` with that `roomId`.
 - **Leaving:**
   - A **lobby** player is removed. If the host left, the earliest-joined remaining player becomes host. If nobody is left, the room becomes `abandoned`.
-  - Leaving a **`playing`** room sets the room to `abandoned`, marks the seat `left_at`, and appends `gameAborted {by}`.
+  - Leaving a **`playing`** room sets the room to `abandoned`, marks the seat `left_at`, and appends `gameAborted {by, reason: "left"}`.
 - **Rate limits per user:**
   - `create`: at most 10 successful creations per hour.
   - `join`: at most 20 attempts per 10 minutes, failed and unknown codes included.
@@ -196,6 +207,159 @@ If the CAS finds a different version, the whole transaction rolls back, and the 
 
 A failed join attempt still commits its rate-limit hit, because rule violations are returned as results and not thrown.
 
+## Edge Function `room-action`
+
+Gameplay. The server restores the room's engine, applies the action and commits the result. The order in which the server **commits** actions is the official order of play; network delay is accepted (PRD §7.4).
+
+```
+POST /functions/v1/room-action
+Authorization: Bearer <access token of a seated player>
+Content-Type: application/json
+
+{ "roomId": "<uuid>", "type": "<action>", ...input }
+```
+
+CORS works like `rooms`. Every response also carries `Server-Timing: load;dur=…, engine;dur=…, commit;dur=…, total;dur=…` in ms. `Access-Control-Expose-Headers` and `Timing-Allow-Origin` are set, so browsers can read it.
+
+### Actions
+
+| `type` | Input | Who / when |
+|---|---|---|
+| `start` | – | Host only, room in `lobby`, 2–4 seated players. Seats are ordered by `joined_at`. Every player is human, `adapt: false`, the room's variant, and a new 32-bit seed from `crypto.getRandomValues`. The room becomes `playing` |
+| `handDown` | – | Put your hand down during a sync |
+| `play` | `pileId?` (`"up"`/`"down"`) | Play your most urgent card. The client never picks the value |
+| `proposeStar` · `voteStar` | `agree: boolean` (vote) | Throwing star. The proposer counts as yes, and everyone else must vote |
+| `refocus` · `pause` · `resume` | – | Any player. Resume can come from someone else than the pauser |
+| `nextLevel` | – | Any player, after `levelComplete` |
+| `tick` | – | Runs whatever is due. Does nothing (and writes nothing) when nothing is due |
+| `rematch` | – | Host only, room `finished`. The room goes back to `lobby`; the seated players stay, and the engine state and hands are deleted. The host can then `setVariant` (`rooms`) and `start` again |
+| `endGame` | – | Any player, only after the game has been `paused` for 3 minutes or more. The room becomes `abandoned` and `gameAborted` is appended |
+
+### Response
+
+```jsonc
+// 200
+{ "ok": true, "version": 12, "serverNow": 1793640000000, "nextDeadlineAt": 1793640001400, "status": "playing",
+  "view": { /* engine.viewFor(you): public table + only your own hand */ },
+  "events": [{ "seq": 41, "type": "play", "data": { /* redacted for you */ } }] }
+// 409
+{ "error": { "code": "INVALID_MOVE", "message": "…" }, "view": { … }, "version": 12, "serverNow": …, "nextDeadlineAt": … }
+```
+
+- `serverNow` is the Postgres clock in ms. Use it to estimate the clock offset.
+- `nextDeadlineAt` is the next moment a `tick` changes something, or `null` while the table waits for a player.
+- `view` is `null` in a lobby, for example after `rematch`.
+- The `events` are exactly the ones this request committed, numbered like `room_events.seq`.
+
+### Error codes
+
+| Code | HTTP | When |
+|---|---|---|
+| `INVALID_INPUT` | 400 | Not JSON, bad `roomId`, unknown `type`, non-string `pileId`, `voteStar` without a boolean `agree` |
+| `UNAUTHORIZED` | 401 | Missing, invalid or expired token (the gateway also answers 401 itself, see `rooms`) |
+| `NOT_A_MEMBER` | 403 | You have no seat in this room, or the room does not exist |
+| `NOT_HOST` | 403 | `start` or `rematch` by someone who is not the host |
+| `INVALID_MOVE` | 409 | Not possible right now: wrong phase, no card, already voted, a lobby that has not started, a `finished` or `abandoned` room (only `rematch` works there), `endGame` too early. The body carries the current `view` and `version`, so clients resync quietly |
+| `CONFLICT_RETRY` | 409 | The room changed under the action 4 times in a row (3 retries). Send it again |
+| `RATE_LIMITED` | 429 | More than 15 actions per second from one user. The limit is per function instance, so it is approximate |
+
+### Pipeline
+
+1. **Authenticate:** `auth.getUser(token)`; 401 otherwise.
+2. **Load:** `load_room_for_action(room, user)` returns the room, your seat, the seated players, `engine_state`, `version` and `now_ms` from `clock_timestamp()`. The database clock is the only clock (I6). No seat means 403.
+3. **Restore:** `MindEngine.fromJSON(engine_state)`, listen with `on('*')`, then `tick(now)`.
+4. **Apply** the action at `now`.
+5. **No change** (the engine state is identical): answer with the current view and **do not write**. A `tick` with nothing due ends here.
+6. **Commit:** `commit_room_action(...)`. On `conflict`, start again from step 2, up to 3 times, then answer `CONFLICT_RETRY`.
+
+If an action is not possible but its `tick` made a due change, that change is committed and the answer is still `INVALID_MOVE`.
+
+`commit_room_action` does everything in **one transaction**:
+
+1. `UPDATE rooms SET version = version + 1, status, public_state, next_deadline_at, last_activity_at = now() WHERE id = $room AND version = $expected`. If no row changes, it returns `{"conflict": true}` and nothing else happens.
+2. Upsert `room_secrets.engine_state`.
+3. Upsert only the `room_hands` rows that changed. Each row gets the new room version.
+4. Insert the events with consecutive `seq`.
+
+### What is stored where (I2)
+
+| Where | What | Who reads it |
+|---|---|---|
+| `room_secrets.engine_state` | `engine.toJSON()`: every hand, the **seed and RNG state** (they would let a player predict future deals) | Nobody but the server |
+| `room_hands` | Each player's own hand, `[{ "v", "pile" }]` | That player (RLS + Realtime) |
+| `rooms.public_state` | `engine.viewFor(null)`: the public table, no hand. When the game ends it gains `result: { won, level, maxLevel, stats, variant }` | Members |
+| `room_events.payload` | `Mind.redactEvent(type, data, null)`: the public redaction | Members |
+| Response | `viewFor(you)` and the events `redactEvent(…, you)` | You |
+
+**Player ids are seat-based (`s0`–`s3`)** in the engine, in `public_state`, in every event and every response. User UUIDs never appear there. `rooms.status` becomes `finished` when the engine reaches `victory` or `gameOver`.
+
+### Events
+
+`room_events` (and the `events` of a response) use the engine's event names and payloads, plus two server events. In **Blind**, a `play` hides `card.v`, `top` and `gap` until that level's `reveal`.
+
+| Type | Public payload |
+|---|---|
+| `levelStart` | `{ level, maxLevel, reward }` (`reward`: `"star"`, `"life"` or `null`) |
+| `syncStart` | `{ reason }`: `level`, `refocus`, `mistake` or `pause` |
+| `handDown` | `{ playerId }` |
+| `allHandsDown` | `{ reason }`. The sync hold (1.4 s) starts now |
+| `playing` | `{ reason }`: the sync reason, or `resume` after a rejected star or a star |
+| `play` | `{ playerId, card: { v, pile }, pileId, blind, top, count, gap, elapsed }` |
+| `perfectSync` | `{ a, b, delta }`: two plays by different players within 1 s (not in Blind) |
+| `mistake` | `{ playerId, card, offenders: [{ playerId, cards }], lives }`. The offenders' lower cards are discarded face up (not in Blind) |
+| `starProposed` | `{ proposer, needsHuman }` |
+| `starVote` | `{ playerId, agree, timeout? }` |
+| `starRejected` | `{ by }` |
+| `star` | `{ discards: [{ playerId, v, pile }], stars }` |
+| `refocusCalled` | `{ playerId }` (not in Blind) |
+| `reveal` | `{ results: [{ pile, index, v, by, ok }], wrong, lives }` (Blind only, at the end of a level) |
+| `levelComplete` | `{ level, reward, applied, flawless, lives, stars }` |
+| `victory` | `{ level, flawless }` |
+| `gameOver` | `{ level }` |
+| `paused` · `resumed` | `{ playerId }` |
+| `gameAborted` | `{ by, reason }`: `"left"` (from `rooms` → `leave`) or `"endGame"`. The room is `abandoned` |
+| `rematch` | `{ by }`. The room is back in `lobby` |
+
+### Concurrency model (I6)
+
+`room-action` uses **optimistic concurrency**:
+
+- Every request works on the version it loaded and commits with a compare-and-swap on `rooms.version`. Nothing is locked while the engine runs.
+- When two actions load the same version, the first commit wins. The second one gets `conflict`, reloads and is applied **on top of** the first. That gives the commit order.
+  - Two plays both apply, in commit order.
+  - A play that lost the race to a mistake finds the table `resolving` and gets `INVALID_MOVE`. It is not moved to that player's next card.
+- `rooms` (lobby) writes also bump `version`. If a player leaves during a game, the game becomes `abandoned`, and later actions get `INVALID_MOVE`.
+- `seq` numbers are consecutive per room. The compare-and-swap `UPDATE` holds the room's row lock until the commit ends, so concurrent commits cannot interleave.
+
+### Timer model
+
+Edge Functions keep no state, so timers are **stored deadlines** in the engine state, in server ms:
+
+| Deadline | Length |
+|---|---|
+| Sync hold, after the last hand goes down | 1.4 s |
+| Resolve pause after a mistake | 2.8 s |
+| Resolve pause after a star | 2.3 s |
+| Blind reveal | 0.9 s + 0.38 s per card + 0.6 s, or 1.4 s with mistakes |
+| Star vote; a missing vote counts as **no** | 12 s |
+
+- `engine.nextDeadline()` is written to `rooms.next_deadline_at` and returned as `nextDeadlineAt`.
+- When the server clock passes it, clients call `tick`. MIND-06 sends it after a random 0–150 ms delay.
+- A `tick` before the deadline changes nothing and writes nothing. If several players tick at the same deadline, exactly one state transition happens: the others get `conflict`, reload, find nothing due and write nothing.
+- `pause` freezes the table. `resume` moves every deadline by the paused time. After 3 minutes paused, `endGame` is allowed.
+- Nothing runs on the server by itself. If nobody ticks, the table waits, and the cleanup job abandons a game after 2 idle hours.
+
+### Engine sharing (I4)
+
+The functions import `../_shared/mind-engine.js` as a side-effect import and read `globalThis.Mind`.
+
+That file is a **generated, byte-identical copy** of `engine/mind-engine.js`, the only source:
+
+- **After changing the engine, run `npm run sync-engine` and commit both files.**
+- `test/engine-sync.test.js` (part of `npm test` and CI) fails if they differ.
+
+The copy exists because the edge runtime and the deploy bundle only reliably contain `supabase/functions/`. Locally, `supabase functions serve` does resolve an import from outside that folder, but whether `supabase functions deploy` bundles such a file can only be checked against a real project (MIND-07). The copy works in every case.
+
 ## Cleanup
 
 `pg_cron` job `the-mind-cleanup-rooms` runs `private.cleanup_rooms()` every 10 minutes:
@@ -218,11 +382,15 @@ You need Docker and Node 20+. Run `npm install` once; it installs the Supabase C
 | `npm run db:reset` | Recreates the local database and applies every migration |
 | `npm run db:test` | Runs the pgTAP tests in `supabase/tests/` (`supabase test db`) |
 | `npm run functions:serve` | Serves the Edge Functions in the foreground, with hot reload and logs, at `http://127.0.0.1:54321/functions/v1/<name>` |
-| `npm test` | Node unit tests. They need no database; the Postgres integration test is skipped |
+| `npm test` | Node unit tests, including the gameplay pipeline and the privacy scan. They need no database; the integration and e2e tests are skipped |
 | `npm run test:integration` | The rooms rules on the local database. It uses `ROOMS_TEST_DB_URL`, which defaults to the local stack |
+| `npm run test:e2e` | Two anonymous players play Classic level 1 over HTTP against the running local stack. The URL and anon key come from `supabase status`, or from `SUPABASE_E2E_URL` / `SUPABASE_E2E_ANON_KEY` |
+| `npm run sync-engine` | Copies `engine/mind-engine.js` to `supabase/functions/_shared/mind-engine.js`. Run it after every engine change |
 | `npm run db:stop` | Stops the stack |
 
 `npx supabase status` prints the local URL and keys. They are well-known development defaults and only work against your machine.
+
+If `/functions/v1/…` answers `503 name resolution failed` (for example after `db:reset`), the edge runtime container is not running. Run `npm run functions:serve`.
 
 Try the function by hand, once `npm run db:start` is running:
 
@@ -238,7 +406,7 @@ curl -s "$API/functions/v1/rooms" -H "Authorization: Bearer $TOKEN" -H 'Content-
 CI (`.github/workflows/ci.yml`) has two jobs:
 
 - `test` runs `npm test`.
-- `db-tests` runs `supabase db start`, then `supabase test db`, then `npm run test:integration`.
+- `db-tests` runs `supabase start` (without Realtime, Storage, Studio and the other services the tests don't need). It then runs `supabase test db`, `npm run test:integration` and `npm run test:e2e`.
 
 ## Secrets (I8)
 
@@ -255,7 +423,8 @@ git grep -iE "service_role|sb_secret_|eyJhbGci"
 Expected matches, none of them a secret:
 
 - this page and the issue texts in `docs/online/`;
-- the env-var **name** `SUPABASE_SERVICE_ROLE_KEY` read in `supabase/functions/rooms/index.ts`;
+- the env-var **name** `SUPABASE_SERVICE_ROLE_KEY` read in `supabase/functions/rooms/index.ts` and `supabase/functions/room-action/index.ts`;
+- the **role name** `service_role` in the `grant execute … to service_role` of the MIND-04 migration and in its pgTAP test;
 - a comment in the CLI-generated `supabase/config.toml` that lists the API roles.
 
 Anything else is a leak: rotate the key, then remove it from the history.
