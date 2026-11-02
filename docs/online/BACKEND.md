@@ -1,7 +1,7 @@
 # The Mind Online — Backend
 
 Supabase backend for online play: Postgres with row-level security, anonymous Auth, Realtime and Edge Functions.
-It covers the **lobby** (`rooms`, MIND-03) and **gameplay** (`room-action`, MIND-04).
+It covers the **lobby** (`rooms`, MIND-03), **gameplay** (`room-action`, MIND-04) and the **lobby UI** that uses them (MIND-05, see [Front-end](#front-end-mind-05)).
 
 The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply. The ones that shape this backend:
 
@@ -10,6 +10,7 @@ The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply
 - **I3:** clients never write to tables directly; every write goes through an Edge Function.
 - **I4:** there is one rules engine, `engine/mind-engine.js`. The functions use a byte-identical copy (see below), and no rule lives in SQL.
 - **I6:** every state change is atomic and committed with a version compare-and-swap, timed by the Postgres clock.
+- **I7:** nicknames are never inserted as HTML.
 - **I8:** no secrets in the repository.
 
 | Path | What it is |
@@ -17,6 +18,7 @@ The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply
 | `supabase/config.toml` | Local stack config. Anonymous sign-ins are on; `verify_jwt = true` for `rooms` and `room-action` |
 | `supabase/migrations/20261102100000_rooms.sql` | Tables, RLS, Realtime publication, cleanup job |
 | `supabase/migrations/20261102200000_room_action.sql` | `load_room_for_action` and `commit_room_action`, service role only |
+| `supabase/migrations/20261102300000_room_channel.sql` | Realtime Authorization: only room members may join the private channel `room:<roomId>` and track Presence on it |
 | `supabase/functions/rooms/index.ts` | Deno entry point of the `rooms` function. It only wires auth and Postgres |
 | `supabase/functions/room-action/index.ts` | Deno entry point of the `room-action` function. It only wires the engine, auth and the RPC repository |
 | `supabase/functions/_shared/rooms-rules.mjs` | Lobby business rules, runtime-agnostic, behind a small repository interface |
@@ -29,10 +31,13 @@ The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply
 | `supabase/functions/_shared/room-action-http.mjs` | HTTP layer of `room-action`: `Server-Timing`, error mapping |
 | `supabase/functions/_shared/http.mjs` | Shared CORS and JSON helpers |
 | `supabase/functions/_shared/mind-engine.js` | **Generated** copy of `engine/mind-engine.js` (`npm run sync-engine`) |
-| `supabase/tests/database/*.test.sql` | pgTAP tests: RLS, schema, cleanup, gameplay commits |
+| `supabase/tests/database/*.test.sql` | pgTAP tests: RLS, schema, cleanup, gameplay commits, the room channel |
 | `test/rooms.test.mjs`, `test/rooms-postgres.integration.test.mjs` | Node tests: lobby rules (in-memory) and on a real database |
 | `test/room-action.test.mjs`, `test/room-action-privacy.test.mjs` | Node tests: gameplay pipeline and the privacy scan |
 | `test/room-action.e2e.test.mjs`, `test/engine-sync.test.js` | Two players over HTTP; the engine copy is identical |
+| `online-config.js`, `online/*.js` | The lobby UI and its client (MIND-05), see [Front-end](#front-end-mind-05) |
+| `test/online-core.test.js`, `test/online-i18n.test.js`, `test/online-wiring.test.js` | Node tests: the lobby's pure helpers, TR/EN texts, and how online play is wired into the page |
+| `test/online-lobby.e2e.test.mjs` | The lobby in Chromium (Playwright) against the local stack: `npm run test:e2e:lobby` |
 
 ## Schema
 
@@ -127,6 +132,21 @@ RLS is **on for every table** (`public` and `private`). Clients only ever read.
 ## Realtime
 
 `rooms`, `room_players`, `room_events` and `room_hands` are in the `supabase_realtime` publication. Postgres Changes respect the policies above, so a member gets their room's changes and their own hand only. `room_secrets` is never published.
+
+Realtime cannot check `DELETE` events against RLS or filter them, so the lobby does not subscribe to them. Every lobby write also bumps `rooms.version`, so the room's `UPDATE` covers a player leaving.
+
+### Private room channel `room:<roomId>` (MIND-05)
+
+The lobby joins one channel per room, named `room:<roomId>` with the room id in lower case, as a **private** channel (`config: { private: true }`). It carries the room's Postgres Changes and Presence, keyed on the user id. Realtime checks private channels against RLS policies on `realtime.messages` (migration `20261102300000_room_channel.sql`):
+
+| Policy | Allows |
+|---|---|
+| `SELECT`, extension `presence` or `broadcast` | Joining the channel and receiving its Presence |
+| `INSERT`, extension `presence` | Tracking your own Presence |
+
+Both apply only to `authenticated` users who are current members of the room, through `private.is_room_channel_member(realtime.topic())`. That function accepts only `room:<uuid>` topics and then asks `private.is_room_member`, so a player who left is refused at once. Nobody may **send** Broadcast messages on the channel: there is no chat (PRD §5), and game state comes from Postgres.
+
+`supabase/tests/database/room_channel.test.sql` checks this through `realtime.authorize()`, the function the Realtime server itself calls: members may join and track Presence, while non-members, members of another room, players who left, `anon` and malformed topics are refused. `realtime.messages` is owned by the Realtime service, which also creates its daily partitions, so that test needs the stack started **with** Realtime.
 
 Free plan limits: 200 concurrent connections and 100 messages per second.
 
@@ -372,19 +392,66 @@ The copy exists because the edge runtime and the deploy bundle only reliably con
 
 The function returns counts, for example `{"lobbyAbandoned":1,"playingAbandoned":0,"roomsDeleted":2,"usersDeleted":0}`. Abandoning a room bumps its `version` but does not count as activity.
 
+## Front-end (MIND-05)
+
+The lobby UI sits next to the offline game in `index.html`. Its code is in four classic scripts, loaded after the app:
+
+| File | What it is |
+|---|---|
+| `online-config.js` | `window.MIND_ONLINE = { supabaseUrl: '', supabaseKey: '' }`. Committed empty; MIND-07 fills it at deploy time from repository variables |
+| `online/online-core.js` | Pure helpers (UMD, tested in Node): room codes, the `?room=` link, config and key checks, error → i18n keys, seats + Presence |
+| `online/online-client.js` | Loads supabase-js, signs in anonymously, calls the Edge Functions, reads the room, joins the room channel |
+| `online/online-lobby.js` | The Home entry and rejoin banner, and the `#online` (create / join) and `#lobby` screens |
+
+### Config
+
+- Only the project URL and the **publishable (anon) key** may ever be used (I8). `online-core.js` refuses any other key (`sb_secret_…`, or a JWT whose role is not `anon`), and the page then treats online play as not set up.
+- With empty values, **Play online** on Home is disabled and says "Online play isn't set up yet" (TR: "Çevrimiçi oyun henüz kurulmadı").
+- **Local development:** point the page at your local stack without touching the committed file. In the browser console:
+
+  ```js
+  localStorage['theMind.online.dev'] = JSON.stringify({ supabaseUrl: 'http://127.0.0.1:54321', supabaseKey: '<ANON_KEY or PUBLISHABLE_KEY from npx supabase status>' })
+  ```
+
+  A valid override wins over `online-config.js`; remove the key to go back. Serve the folder over HTTP (for example `python3 -m http.server 8080`) so share links work. `file://` works too, but its links only open on your own machine.
+
+### Loading and network (I5)
+
+- The online scripts are local files and make **no request** on their own. Offline play, from `file://` or a web server, never contacts Supabase or the CDN.
+- `@supabase/supabase-js` loads only when the player enters online mode (`#online` or `#lobby`). It comes from jsDelivr's UMD build at a **pinned exact version**, with Subresource Integrity (`integrity` and `crossorigin="anonymous"`). See `SUPABASE_JS` in `online-client.js`.
+- One exception, by design: when an earlier online visit left a room behind (`online.activeRoomId`), Home checks that room to show the **Rejoin your room** banner. Leaving the room, or the room closing, clears it.
+- **Upgrading supabase-js:** change `version` and `src`, then set `integrity` to the new file's hash: `curl -s <src> | openssl dgst -sha384 -binary | openssl base64 -A`. `test/online-wiring.test.js` checks that the URL is pinned and integrity-checked.
+
+### Identity and saved state
+
+- On the first online visit the page calls `supabase.auth.signInAnonymously()`. supabase-js keeps the session in `localStorage`, so a reload keeps the same user and seat.
+- The nickname and the active room are saved in `Store` (`theMind.bgc.v1` → `online: { nickname, activeRoomId }`). The nickname is pre-filled next time.
+
+### Lobby data flow
+
+- **Writes** only go through the Edge Functions (I3): `rooms` (`create`, `join`, `leave`, `setVariant`) and `room-action` (`start`).
+- **Reads** go through PostgREST under RLS: the room (`rooms`) and its seated players (`room_players`).
+- **Live updates** come over the private channel `room:<roomId>`. A change to the room or its seats, or a Presence connection arriving or leaving, makes the lobby read the room again. Reads are coalesced, and late answers are dropped.
+- **Presence:** each lobby tracks its user on the channel. A seat is *online* while its user has a live connection and *away* otherwise. The host's **Start** works only with 2–4 seated players who are all online.
+- **Share link:** `<origin + path>?room=CODE`. Opening it shows Join with the code filled in and removes `?room=` from the address bar. With a saved nickname, Join has the focus, so joining takes one tap.
+- **Errors:** every backend error code has a TR/EN message (`online.err.*`, mapped by `errorKey`). A network failure says "Can't reach the server" and offers **Try again**. `ALREADY_IN_GAME` offers **Rejoin your room**.
+- **Game start:** when the room becomes `playing`, the lobby shows "Game starting…". If MIND-06 defines `window.MindOnlineTable.enter`, it is called once with `{ roomId, room, players, userId }`.
+- Nicknames reach the page only through `textContent` or `esc()` (I7). Joins and leaves are announced in `#srLive`.
+
 ## Local development
 
 You need Docker and Node 20+. Run `npm install` once; it installs the Supabase CLI as a dev dependency, so `npx supabase` works.
 
 | Command | What it does |
 |---|---|
-| `npm run db:start` | Starts the local Supabase stack (`supabase start`), including the Edge Functions. The API is on `http://127.0.0.1:54321` and Postgres on port `54322` |
+| `npm run db:start` | Starts the local Supabase stack (`supabase start`), including Realtime and the Edge Functions. The API is on `http://127.0.0.1:54321` and Postgres on port `54322` |
 | `npm run db:reset` | Recreates the local database and applies every migration |
 | `npm run db:test` | Runs the pgTAP tests in `supabase/tests/` (`supabase test db`) |
 | `npm run functions:serve` | Serves the Edge Functions in the foreground, with hot reload and logs, at `http://127.0.0.1:54321/functions/v1/<name>` |
 | `npm test` | Node unit tests, including the gameplay pipeline and the privacy scan. They need no database; the integration and e2e tests are skipped |
 | `npm run test:integration` | The rooms rules on the local database. It uses `ROOMS_TEST_DB_URL`, which defaults to the local stack |
 | `npm run test:e2e` | Two anonymous players play Classic level 1 over HTTP against the running local stack. The URL and anon key come from `supabase status`, or from `SUPABASE_E2E_URL` / `SUPABASE_E2E_ANON_KEY` |
+| `npm run test:e2e:lobby` | The online lobby in Chromium against the running local stack: create, share link, join, Presence, start, a full room, errors, the mobile layout, and no request in offline play. Run `npx playwright install chromium` once first. `ONLINE_E2E_SCREENSHOTS=<dir>` also saves lobby screenshots |
 | `npm run sync-engine` | Copies `engine/mind-engine.js` to `supabase/functions/_shared/mind-engine.js`. Run it after every engine change |
 | `npm run db:stop` | Stops the stack |
 
@@ -406,7 +473,7 @@ curl -s "$API/functions/v1/rooms" -H "Authorization: Bearer $TOKEN" -H 'Content-
 CI (`.github/workflows/ci.yml`) has two jobs:
 
 - `test` runs `npm test`.
-- `db-tests` runs `supabase start` (without Realtime, Storage, Studio and the other services the tests don't need). It then runs `supabase test db`, `npm run test:integration` and `npm run test:e2e`.
+- `db-tests` runs `supabase start` (with Realtime, but without Storage, Studio and the other services the tests don't need) and waits for Realtime's `realtime.messages` partitions. It then runs `supabase test db`, `npm run test:integration`, `npm run test:e2e` and, after `npx playwright install --with-deps chromium`, `npm run test:e2e:lobby`.
 
 ## Secrets (I8)
 
@@ -425,6 +492,7 @@ Expected matches, none of them a secret:
 - this page and the issue texts in `docs/online/`;
 - the env-var **name** `SUPABASE_SERVICE_ROLE_KEY` read in `supabase/functions/rooms/index.ts` and `supabase/functions/room-action/index.ts`;
 - the **role name** `service_role` in the `grant execute … to service_role` of the MIND-04 migration and in its pgTAP test;
+- fake keys (`sb_secret_example`, a JWT with role `service_role`) in `test/online-core.test.js` and the search pattern in `test/online-wiring.test.js`, which check that the front-end refuses such keys and never contains one;
 - a comment in the CLI-generated `supabase/config.toml` that lists the API roles.
 
 Anything else is a leak: rotate the key, then remove it from the history.

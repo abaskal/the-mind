@@ -18,10 +18,11 @@ jobs:
           node-version: 20
       - run: npm test
 
-  # Local Supabase (Docker): migrations, pgTAP tests, the rooms rules on Postgres, and the Edge Functions over HTTP.
+  # Local Supabase (Docker): migrations, pgTAP tests, the rooms rules on Postgres, the Edge Functions over HTTP, and the
+  # online lobby in a real browser.
   db-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -31,11 +32,25 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: 2.122.0
-      # Postgres, Auth, PostgREST, the gateway and the edge runtime (serves supabase/functions); nothing else is needed.
-      - run: supabase start -x realtime,storage-api,imgproxy,mailpit,postgres-meta,studio,logflare,vector,supavisor
+      # Postgres, Auth, PostgREST, Realtime, the gateway and the edge runtime (serves supabase/functions).
+      - run: supabase start -x storage-api,imgproxy,mailpit,postgres-meta,studio,logflare,vector,supavisor
+      # Realtime owns realtime.messages and creates its daily partitions, which the room channel pgTAP test needs.
+      - name: Wait for the realtime.messages partitions
+        run: |
+          for i in $(seq 1 30); do
+            n=$(docker exec supabase_db_the-mind psql -U postgres -tAc "select count(*) from pg_inherits where inhparent = 'realtime.messages'::regclass")
+            [ "${n:-0}" -gt 0 ] && exit 0
+            sleep 2
+          done
+          echo "Realtime created no realtime.messages partition" && exit 1
       - run: supabase test db
       - run: npm run test:integration
       - name: npm run test:e2e (two players over HTTP)
         run: |
           eval "$(supabase status -o env | grep -E '^(API_URL|ANON_KEY)=')"
           SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$ANON_KEY" npm run test:e2e
+      - run: npx playwright install --with-deps chromium
+      - name: npm run test:e2e:lobby (online lobby in Chromium)
+        run: |
+          eval "$(supabase status -o env | grep -E '^(API_URL|ANON_KEY)=')"
+          SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$ANON_KEY" npm run test:e2e:lobby

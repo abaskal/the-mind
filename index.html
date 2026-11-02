@@ -504,6 +504,49 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
 .stat .bests b { font-size: 26px; }
 .bests small { color: var(--muted); font-weight: 700; font-size: 11px; }
 
+/* online (MIND-05) */
+.online-note { margin: -8px 0 18px; }
+.rejoin { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; justify-content: space-between; margin-bottom: 18px; border-color: rgba(139, 255, 154, 0.45); background: rgba(139, 255, 154, 0.08); }
+.rejoin b { color: var(--green); }
+.online-wrap { max-width: 860px; }
+.online-tabs { margin-bottom: 14px; }
+.notice { margin-bottom: 14px; font-weight: 700; }
+.field { display: grid; gap: 6px; margin-bottom: 14px; }
+.field > span { font-weight: 700; }
+.field small { color: var(--muted); font-size: 12px; }
+.field input { font: inherit; font-size: 17px; color: var(--ink); background: rgba(255, 255, 255, 0.06); border: 2px solid var(--line); border-radius: 12px; padding: 11px 14px; width: 100%; }
+.field input:focus { outline: none; border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(94, 242, 255, 0.2); }
+.field input.code-input { font: 800 24px/1 var(--num-font); letter-spacing: 6px; text-transform: uppercase; }
+.online-err { color: var(--gold); font-weight: 700; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 4px 0 10px; }
+.online-err:empty { display: none; }
+.online-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.lobby-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.room-code { font: 900 clamp(40px, 9vw, 64px)/1 var(--num-font); letter-spacing: clamp(4px, 1.4vw, 10px); color: var(--cyan); margin: 6px 0 14px; user-select: all; overflow-wrap: anywhere; }
+.lobby-share { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.lobby-seats { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lobby-seat { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-radius: 14px; background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); min-height: 48px; }
+.lobby-seat.you { border-color: rgba(94, 242, 255, 0.5); }
+.lobby-seat.empty { color: var(--muted); border-style: dashed; }
+.lobby-seat .nick { font-weight: 800; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lobby-seat .tag { padding: 2px 8px; font-size: 11px; flex: 0 0 auto; }
+.lobby-seat .presence { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 700; color: var(--muted); flex: 0 0 auto; }
+.lobby-seat .presence.on { color: var(--green); }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: rgba(255, 255, 255, 0.25); flex: 0 0 10px; }
+.dot.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.lobby-mode { margin-top: 18px; }
+.opt.static { cursor: default; }
+.opt.static:hover { border-color: var(--cyan); }
+.lobby-conn { color: var(--gold); font-weight: 700; margin-bottom: 12px; }
+.lobby-conn:empty { display: none; }
+.starting { text-align: center; padding: 40px 20px; }
+.starting .spin { font-size: 48px; display: inline-block; animation: spin 2.4s linear infinite; }
+@media (max-width: 760px) {
+  .lobby-top { grid-template-columns: 1fr; }
+  .lobby-bar { flex-direction: column; align-items: stretch; }
+  .lobby-bar .online-actions { justify-content: stretch; }
+  .lobby-bar .online-actions .btn { flex: 1 1 auto; }
+}
+
 /* responsive */
 @media (max-width: 980px) {
   .hero { grid-template-columns: 1fr; min-height: auto; padding-top: 10px; }
@@ -574,6 +617,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     <section id="screen-teach" class="screen"></section>
     <section id="screen-faq" class="screen"></section>
     <section id="screen-journal" class="screen"></section>
+    <section id="screen-online" class="screen" aria-labelledby="onlineTitle"></section>
+    <section id="screen-lobby" class="screen" aria-labelledby="lobbyTitle"></section>
 
     <section id="screen-game" class="screen game">
       <div class="hud">
@@ -838,6 +883,51 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       'alts.dixit': 'Dixit · 3–8 players · storytelling',
       'alts.wavelength': 'Wavelength · 2–12 players · social guessing',
       'footer': 'A fan-made digital companion for Boardgamecolony. The Mind © Wolfgang Warsch / Nürnberger-Spielkarten-Verlag.',
+
+      'online.home.play': 'Play online', 'online.home.off': "Online play isn't set up yet",
+      'online.rejoin.text': 'You still have a seat in room {code}.', 'online.rejoin.btn': 'Rejoin your room',
+      'online.title': 'Play online',
+      'online.sub': 'Play with 1–3 friends, each on their own device. No account and no chat: just a nickname and a room code.',
+      'online.tab.create': 'Create a room', 'online.tab.join': 'Join a room',
+      'online.nickname': 'Your nickname', 'online.nickname.hint': '1–16 characters. Everyone in the room sees it.',
+      'online.code': 'Room code', 'online.code.hint': '6 letters and digits, e.g. ABC234. Dashes and spaces are fine.',
+      'online.create': 'Create room', 'online.join': 'Join room',
+      'online.connecting': 'Connecting…', 'online.retry': 'Try again',
+      'online.lobby.title': 'Lobby',
+      'online.lobby.copyCode': 'Copy code', 'online.lobby.copyLink': 'Copy link', 'online.lobby.share': 'Share',
+      'online.lobby.copied': 'Copied!', 'online.lobby.copyFailed': "Couldn't copy. Select the code and copy it by hand.",
+      'online.lobby.shareText': 'Join my game of The Mind! Room code: {code}',
+      'online.lobby.invite': 'Send the code or the link to 1–3 friends.',
+      'online.lobby.players': 'Players ({n}/4)', 'online.lobby.free': 'Free seat',
+      'online.lobby.host': 'Host', 'online.lobby.you': 'you', 'online.lobby.online': 'online', 'online.lobby.away': 'away',
+      'online.lobby.hostOnly': 'Only the host can change the mode.',
+      'online.lobby.start': 'Start the game', 'online.lobby.leave': 'Leave room',
+      'online.lobby.waitHost': 'Waiting for the host…',
+      'online.lobby.needPlayers': 'Waiting for players: a game needs 2–4.',
+      'online.lobby.needOnline': 'Waiting until everyone is online.',
+      'online.lobby.ready': 'Everyone is here. Start when you are ready!',
+      'online.lobby.starting': 'Game starting…', 'online.lobby.startingSub': 'Hands are being dealt. Stay on this page.',
+      'online.lobby.closed': 'That room has closed.',
+      'online.lobby.confirmLeaveGame': 'Leave this game? It ends the game for everyone.',
+      'online.lobby.reconnecting': 'Connection lost. Reconnecting…',
+      'online.sr.joined': '{name} joined the room', 'online.sr.left': '{name} left the room',
+      'online.sr.host': '{name} is now the host', 'online.sr.mode': 'Mode changed: {mode}',
+      'online.err.invalidInput': "That request wasn't valid. Please try again.",
+      'online.err.nickname': 'Choose a nickname of 1–16 characters (no control characters).',
+      'online.err.code': 'Enter the 6-character room code, e.g. ABC234.',
+      'online.err.auth': "Couldn't sign you in. Please try again.",
+      'online.err.notHost': 'Only the host can do that.',
+      'online.err.notFound': 'No open room has this code.',
+      'online.err.nicknameTaken': 'Name already taken in this room.',
+      'online.err.full': 'Room is full.',
+      'online.err.started': 'This game has already started.',
+      'online.err.inGame': "You're already playing in another room.",
+      'online.err.rateLimited': 'Too many tries — wait a minute.',
+      'online.err.notMember': "You're not in this room.",
+      'online.err.invalidMove': "That isn't possible right now.",
+      'online.err.busy': 'The room is busy. Please try again.',
+      'online.err.network': "Can't reach the server.",
+      'online.err.internal': 'Something went wrong on the server. Please try again.',
     },
 
     tr: {
@@ -1009,6 +1099,51 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       'alts.dixit': 'Dixit · 3–8 oyuncu · hikâye anlatma',
       'alts.wavelength': 'Wavelength · 2–12 oyuncu · sosyal tahmin',
       'footer': 'Boardgamecolony için hayran yapımı dijital eşlikçi. The Mind © Wolfgang Warsch / Nürnberger-Spielkarten-Verlag.',
+
+      'online.home.play': 'Çevrimiçi oyna', 'online.home.off': 'Çevrimiçi oyun henüz kurulmadı',
+      'online.rejoin.text': '{code} odasında hâlâ bir yerin var.', 'online.rejoin.btn': 'Odana geri dön',
+      'online.title': 'Çevrimiçi oyna',
+      'online.sub': 'Her biri kendi cihazında 1–3 arkadaşınla oyna. Hesap yok, sohbet yok: yalnızca bir takma ad ve bir oda kodu.',
+      'online.tab.create': 'Oda kur', 'online.tab.join': 'Odaya katıl',
+      'online.nickname': 'Takma adın', 'online.nickname.hint': '1–16 karakter. Odadaki herkes görür.',
+      'online.code': 'Oda kodu', 'online.code.hint': '6 harf ve rakam, ör. ABC234. Tire ve boşluk sorun değil.',
+      'online.create': 'Odayı kur', 'online.join': 'Odaya katıl',
+      'online.connecting': 'Bağlanıyor…', 'online.retry': 'Tekrar dene',
+      'online.lobby.title': 'Lobi',
+      'online.lobby.copyCode': 'Kodu kopyala', 'online.lobby.copyLink': 'Bağlantıyı kopyala', 'online.lobby.share': 'Paylaş',
+      'online.lobby.copied': 'Kopyalandı!', 'online.lobby.copyFailed': 'Kopyalanamadı. Kodu seçip elle kopyala.',
+      'online.lobby.shareText': 'The Mind oyunuma katıl! Oda kodu: {code}',
+      'online.lobby.invite': 'Kodu ya da bağlantıyı 1–3 arkadaşına gönder.',
+      'online.lobby.players': 'Oyuncular ({n}/4)', 'online.lobby.free': 'Boş yer',
+      'online.lobby.host': 'Oda sahibi', 'online.lobby.you': 'sen', 'online.lobby.online': 'çevrimiçi', 'online.lobby.away': 'uzakta',
+      'online.lobby.hostOnly': 'Modu yalnızca oda sahibi değiştirebilir.',
+      'online.lobby.start': 'Oyunu başlat', 'online.lobby.leave': 'Odadan çık',
+      'online.lobby.waitHost': 'Oda sahibi bekleniyor…',
+      'online.lobby.needPlayers': 'Oyuncu bekleniyor: oyun için 2–4 kişi gerekir.',
+      'online.lobby.needOnline': 'Herkesin çevrimiçi olması bekleniyor.',
+      'online.lobby.ready': 'Herkes burada. Hazır olduğunda başlat!',
+      'online.lobby.starting': 'Oyun başlıyor…', 'online.lobby.startingSub': 'Kartlar dağıtılıyor. Bu sayfada kal.',
+      'online.lobby.closed': 'O oda kapandı.',
+      'online.lobby.confirmLeaveGame': 'Bu oyundan çıkılsın mı? Oyun herkes için biter.',
+      'online.lobby.reconnecting': 'Bağlantı koptu. Yeniden bağlanıyor…',
+      'online.sr.joined': '{name} odaya katıldı', 'online.sr.left': '{name} odadan ayrıldı',
+      'online.sr.host': 'Oda sahibi artık {name}', 'online.sr.mode': 'Mod değişti: {mode}',
+      'online.err.invalidInput': 'Bu istek geçersizdi. Lütfen tekrar dene.',
+      'online.err.nickname': '1–16 karakterlik bir takma ad seç (kontrol karakteri olmadan).',
+      'online.err.code': '6 karakterlik oda kodunu gir, ör. ABC234.',
+      'online.err.auth': 'Giriş yapılamadı. Lütfen tekrar dene.',
+      'online.err.notHost': 'Bunu yalnızca oda sahibi yapabilir.',
+      'online.err.notFound': 'Bu kodla açık bir oda yok.',
+      'online.err.nicknameTaken': 'Bu ad bu odada zaten alınmış.',
+      'online.err.full': 'Oda dolu.',
+      'online.err.started': 'Bu oyun çoktan başladı.',
+      'online.err.inGame': 'Zaten başka bir odada oynuyorsun.',
+      'online.err.rateLimited': 'Çok fazla deneme — bir dakika bekle.',
+      'online.err.notMember': 'Bu odada değilsin.',
+      'online.err.invalidMove': 'Bu şu anda mümkün değil.',
+      'online.err.busy': 'Oda meşgul. Lütfen tekrar dene.',
+      'online.err.network': 'Sunucuya ulaşılamıyor.',
+      'online.err.internal': 'Sunucuda bir sorun oluştu. Lütfen tekrar dene.',
     },
   };
 
@@ -1391,6 +1526,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     log: [],
     badges: {},
     tips: {},
+    online: { nickname: '', activeRoomId: null },
   };
 
   const Store = {
@@ -1403,6 +1539,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       if (saved && typeof saved === 'object') {
         Object.assign(d, saved);
         d.settings = Object.assign({}, DEFAULTS.settings, saved.settings || {});
+        d.online = Object.assign({}, DEFAULTS.online, saved.online || {});
       }
       this.data = d;
       return d;
@@ -1438,7 +1575,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     clear() {
-      const keep = { lang: this.data.lang, sound: this.data.sound, settings: this.data.settings };
+      const keep = { lang: this.data.lang, sound: this.data.sound, settings: this.data.settings, online: this.data.online };
       this.data = Object.assign(JSON.parse(JSON.stringify(DEFAULTS)), keep);
       this.save();
     },
@@ -2388,6 +2525,13 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     screen: null,
     engine: null,
     demo: false,
+    modes: MODES,
+    screens: {},
+
+    /* Screens added by other scripts (online/online-lobby.js): impl = { render(), leave?() }. */
+    registerScreen(name, impl) {
+      this.screens[name] = impl;
+    },
 
     init() {
       const d = Store.load();
@@ -2399,7 +2543,10 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       this.bindGameControls();
       this.applyLang();
       const start = (location.hash || '#home').slice(1);
-      this.go(['home', 'setup', 'teach', 'faq', 'journal'].includes(start) ? start : 'home');
+      const online = global.MindOnlineLobby;
+      const linked = online ? online.boot() : null;
+      const known = ['home', 'setup', 'teach', 'faq', 'journal'].concat(Object.keys(this.screens));
+      this.go(linked || (known.includes(start) ? start : 'home'));
       const loop = (now) => {
         if (this.engine && this.screen === 'game') {
           if (this.engine.phase !== 'paused') this.engine.tick(now);
@@ -2457,6 +2604,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
         if (!this.quitGame()) return;
       }
       if (this.screen === 'teach') this.stopTeach();
+      this.leaveScreen();
       this.screen = screen;
       $$('.screen').forEach((s) => s.classList.toggle('active', s.id === 'screen-' + screen));
       $$('.nav button').forEach((b) => b.classList.toggle('active', b.dataset.nav === screen));
@@ -2466,12 +2614,18 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       global.scrollTo(0, 0);
     },
 
+    leaveScreen() {
+      const s = this.screens[this.screen];
+      if (s && s.leave) s.leave();
+    },
+
     render(screen) {
       if (screen === 'home') this.renderHome();
       if (screen === 'setup') this.renderSetup();
       if (screen === 'teach') this.renderTeach();
       if (screen === 'faq') this.renderFaq();
       if (screen === 'journal') this.renderJournal();
+      if (this.screens[screen]) this.screens[screen].render();
     },
 
     toast(html) {
@@ -2489,8 +2643,10 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       const hookHtml = cut > 0 ? `<span class="quiet">${esc(hook.slice(0, cut + 1))}</span> <span class="boom">${esc(hook.slice(cut + 1).trim())}</span>` : esc(hook);
       const heroCards = [[7, -150, -90, -14], [23, -40, -130, -4], [48, 70, -60, 8], [71, -90, 70, 10], [96, 120, 80, -10]];
       const tagCls = ['', 'green', 'gold', 'pink', '', 'gold'];
+      const online = global.MindOnlineLobby;
       $('#screen-home').innerHTML = `
         <div class="wrap">
+          ${online ? online.homeBanner() : ''}
           <div class="hero">
             <div>
               <div class="kicker">${t('home.kicker')}</div>
@@ -2499,9 +2655,11 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
               <p class="lead">${t('home.lead')}</p>
               <div class="cta">
                 <button class="btn big hot" data-nav="setup">▶ ${t('home.play')}</button>
+                ${online ? online.homeButton() : ''}
                 <button class="btn big" data-nav="teach">⏱ ${t('home.teach')}</button>
                 <button class="btn big ghost" id="demoBtn">🎬 ${t('home.demo')}</button>
               </div>
+              ${online ? online.homeNote() : ''}
               <div class="chips">
                 <span class="chip">👥 ${t('chip.players')}</span><span class="chip">🧒 ${t('chip.age')}</span><span class="chip">⏱ ${t('chip.time')}</span>
                 <span class="chip">🃏 ${t('chip.cards')}</span><span class="chip">✍️ ${t('chip.designer')}</span>
@@ -2557,6 +2715,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
         hc.appendChild(c);
       });
       $('#demoBtn').addEventListener('click', () => this.startGame({ demo: true }));
+      if (online) online.bindHome();
     },
 
     /* ---------- setup ---------- */
@@ -2901,6 +3060,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       this.demo = demo;
       this.ended = false;
       this.gameStart = Date.now();
+      this.leaveScreen();
       this.screen = 'game';
       this.closeModal();
       $$('.screen').forEach((x) => x.classList.toggle('active', x.id === 'screen-game'));
@@ -3407,5 +3567,10 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
   document.addEventListener('DOMContentLoaded', () => App.init());
 })(window);
   </script>
+  <!-- Online play (MIND-05). Local classic scripts: they make no network request until the player enters online mode. -->
+  <script id="mind-online-config" src="online-config.js"></script>
+  <script id="mind-online-core" src="online/online-core.js"></script>
+  <script id="mind-online-client" src="online/online-client.js"></script>
+  <script id="mind-online-lobby" src="online/online-lobby.js"></script>
 </body>
 </html>
