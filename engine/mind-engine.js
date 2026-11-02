@@ -1,4 +1,35 @@
-/* The Mind – pure rules engine (no DOM). Works in the browser (window.MindEngine) and in Node (module.exports). */
+/**
+ * The Mind – pure rules engine (no DOM). A classic script: sets `window.Mind` / `globalThis.Mind` in the
+ * browser and Deno, and is the `module.exports` of Node `require()`. Times are always passed in (`now`, ms).
+ *
+ * Setup
+ *   new Mind.MindEngine({ players: [{ id, name?, human? }], variant?, difficulty?, adapt?, seed?, rng? })
+ *     2–4 players, any mix of humans and bots. `seed` (or `rng: Mind.mulberry32(seed)`) makes the game
+ *     reproducible and saveable; without either, a random seed is used.
+ *   engine.on(type | '*', fn) – events: levelStart, syncStart, handDown, allHandsDown, playing, play,
+ *     perfectSync, mistake, starProposed, starVote, starRejected, star, refocusCalled, reveal,
+ *     levelComplete, victory, gameOver, paused, resumed.
+ *   engine.start(now) · engine.tick(now) – call tick at least when nextDeadline() has passed.
+ *
+ * Player actions – return true when applied, false (state unchanged, never throws) when not allowed
+ *   playCard(playerId, pileId?, now)  plays the player's most urgent card (the client never picks a value);
+ *                                     without pileId, the first pile where the player holds a card
+ *   placeHand(playerId, now) · proposeStar(playerId, now) · voteStar(playerId, agree, now)
+ *   callRefocus(playerId, now) · pause(playerId, now) · resume(playerId, now) · nextLevel(now)
+ *   Offline single-human forms kept for index.html: humanPlay(pileId, now), voteStar(agree, now),
+ *   pause(now), resume(now), and placeHand/proposeStar/callRefocus without a playerId.
+ *   Star vote: the proposer counts as yes, every other human must vote; at the deadline a missing human
+ *   vote counts as no, and one no rejects the star.
+ *
+ * Online support
+ *   engine.toJSON() → plain JSON (includes the RNG state – server only, never send it to clients)
+ *   Mind.MindEngine.fromJSON(json, opts?) → engine that continues exactly where it was; re-attach listeners
+ *   engine.viewFor(playerId | null) → what one player may see: public table state and only their own hand.
+ *     In Blind mode pile values are null until the level's reveal. null (spectator/log) gets no hand at all.
+ *   Mind.redactEvent(type, data, forPlayerId, engine?) → copy of an event payload safe to send to that player
+ *   engine.nextDeadline() → earliest time at which tick(now) changes the state, or null while waiting for
+ *     a player. tick(now) before that time changes nothing.
+ */
 (function (global) {
   'use strict';
 
@@ -31,16 +62,36 @@
     perfectSyncWindow: 1000,
   };
 
+  // Seeded RNG. The generator keeps its whole state in `rng.state`, so a game can be saved and continued:
+  // mulberry32(rng.state) produces exactly the numbers rng would have produced next.
   function mulberry32(seed) {
-    let a = seed >>> 0;
-    return function () {
-      a = (a + 0x6d2b79f5) >>> 0;
+    const rng = function () {
+      const a = (rng.state = (rng.state + 0x6d2b79f5) >>> 0);
       let t = a;
       t = Math.imul(t ^ (t >>> 15), t | 1);
       t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+    rng.state = seed >>> 0;
+    return rng;
   }
+
+  function randomSeed() {
+    const c = typeof globalThis !== 'undefined' ? globalThis.crypto : null;
+    if (c && typeof c.getRandomValues === 'function') return c.getRandomValues(new Uint32Array(1))[0];
+    return Math.floor(Math.random() * 4294967296) >>> 0;
+  }
+
+  const clone = (x) => (x === undefined ? null : JSON.parse(JSON.stringify(x)));
+
+  // Everything toJSON() saves besides the RNG state. Derived fields (variant, diff, blind) and listeners are rebuilt.
+  const STATE_FORMAT = 'mind-engine/1';
+  const STATE_KEYS = [
+    'variantId', 'difficultyId', 'adapt', 'tempo', 'maxLevel', 'lives', 'stars', 'level', 'phase',
+    'players', 'piles', 'discard', 'lastPlay', 'vote', 'stats',
+    'levelMistakes', 'levelStarUsed', 'levelBotStarTried', 'botStar', 'blindStart', 'blindFrozenAt', 'revealed',
+    'syncReason', 'allDownAt', 'resolveUntil', 'afterResolve', 'pausedFrom', 'pausedAt', 'pausedBy',
+  ];
 
   // Indices of one longest strictly increasing subsequence: the fewest cards that have to be "out of order".
   function longestRun(vals) {
@@ -62,7 +113,7 @@
   class MindEngine {
     constructor(opts) {
       const o = opts || {};
-      this.rng = o.rng || Math.random;
+      this.rng = o.rng || mulberry32(o.seed != null ? o.seed : randomSeed());
       this.variantId = VARIANTS[o.variant] ? o.variant : 'classic';
       this.variant = VARIANTS[this.variantId];
       this.blind = this.variant.blind;
@@ -97,6 +148,8 @@
       this.listeners = {};
       this.lastPlay = null;
       this.vote = null;
+      this.revealed = false;
+      this.pausedBy = null;
       this.stats = {
         plays: 0, mistakes: 0, livesLost: 0, starsUsed: 0, perfectSyncs: 0,
         flawlessLevels: 0, levelsCleared: 0, startedAt: 0, endedAt: 0,
@@ -182,6 +235,7 @@
       this.levelBotStarTried = false;
       this.botStar = null;
       this.blindStart = null;
+      this.revealed = false;
       this.emit('levelStart', { level, maxLevel: this.maxLevel, reward: this.rewardFor(level) });
       this.beginSync(now, 'level');
     }
@@ -202,10 +256,15 @@
 
     placeHand(playerId, now) {
       if (this.phase !== 'sync') return false;
-      const p = this.player(playerId || (this.human && this.human.id));
+      const p = this.player(playerId != null ? playerId : this.human && this.human.id);
       if (!p || p.handDown) return false;
       p.handDown = true;
       this.emit('handDown', { playerId: p.id });
+      // The hold starts when the last hand goes down, so the saved state already carries its deadline.
+      if (this.allDownAt == null && this.players.every((x) => x.handDown)) {
+        this.allDownAt = now;
+        this.emit('allHandsDown', { reason: this.syncReason });
+      }
       return true;
     }
 
@@ -269,13 +328,21 @@
     }
 
     /* ---------- actions ---------- */
+    // Offline single-human helper: plays the human's most urgent card.
     humanPlay(pileId, now) {
-      if (this.phase !== 'playing') return false;
       const h = this.human;
-      if (!h) return false;
-      const pid = pileId || (this.piles.find((p) => this.urgent(h, p.id)) || {}).id;
-      if (!pid || !this.urgent(h, pid)) return false;
-      this.play(h, pid, now);
+      return h ? this.playCard(h.id, pileId, now) : false;
+    }
+
+    playCard(playerId, pileId, now) {
+      if (now === undefined && typeof pileId === 'number') { now = pileId; pileId = null; }
+      if (this.phase !== 'playing') return false;
+      const p = this.player(playerId);
+      if (!p || !p.human) return false;
+      if (pileId != null && !this.pile(pileId)) return false;
+      const pid = pileId != null ? pileId : (this.piles.find((x) => this.urgent(p, x.id)) || {}).id;
+      if (!pid || !this.urgent(p, pid)) return false;
+      this.play(p, pid, now);
       return true;
     }
 
@@ -351,7 +418,7 @@
 
     proposeStar(playerId, now) {
       if (this.phase !== 'playing' || this.stars <= 0) return false;
-      const proposer = this.player(playerId || (this.human && this.human.id));
+      const proposer = this.player(playerId != null ? playerId : this.human && this.human.id);
       if (!proposer) return false;
       if (this.blind) this.blindFrozenAt = now;
       this.botStar = null;
@@ -369,16 +436,21 @@
         this.vote.pending[p.id] = { at: now + 650 + this.rng() * 1300, agree };
       }
       for (const p of this.players) p.plan = {};
-      this.emit('starProposed', { proposer: proposer.id, needsHuman: !!this.human && !proposer.human });
+      this.emit('starProposed', { proposer: proposer.id, needsHuman: this.players.some((p) => p.human && p.id !== proposer.id) });
       return true;
     }
 
-    voteStar(agree, now) {
-      if (this.phase !== 'starVote') return false;
-      const h = this.human;
-      if (!h || this.vote.votes[h.id] !== undefined) return false;
-      this.vote.votes[h.id] = !!agree;
-      this.emit('starVote', { playerId: h.id, agree: !!agree });
+    // voteStar(playerId, agree, now). The offline single-human form voteStar(agree, now) is still accepted.
+    voteStar(playerId, agree, now) {
+      if (typeof playerId === 'boolean') {
+        const h = this.human;
+        return h ? this.voteStar(h.id, playerId, agree) : false;
+      }
+      if (this.phase !== 'starVote' || !this.vote) return false;
+      const p = this.player(playerId);
+      if (!p || !p.human || this.vote.votes[p.id] !== undefined) return false;
+      this.vote.votes[p.id] = !!agree;
+      this.emit('starVote', { playerId: p.id, agree: !!agree });
       this.checkVote(now);
       return true;
     }
@@ -425,7 +497,9 @@
 
     callRefocus(playerId, now) {
       if (this.phase !== 'playing' || this.blind) return false;
-      this.emit('refocusCalled', { playerId: playerId || (this.human && this.human.id) });
+      const p = this.player(playerId != null ? playerId : this.human && this.human.id);
+      if (!p) return false;
+      this.emit('refocusCalled', { playerId: p.id });
       this.beginSync(now, 'refocus');
       return true;
     }
@@ -462,6 +536,7 @@
         this.phase = 'resolving';
         this.resolveUntil = now + 900 + results.length * TIMING.revealStep + (wrong ? 1400 : 600);
         this.afterResolve = this.lives <= 0 ? 'gameOver' : 'levelDone';
+        this.revealed = true;
         this.emit('reveal', { results, wrong, lives: this.lives });
         return;
       }
@@ -492,16 +567,32 @@
       return true;
     }
 
-    pause(now) {
+    // pause(playerId, now) / resume(playerId, now). The offline forms pause(now) / resume(now) are still accepted.
+    pause(playerId, now) {
+      let by = null;
+      if (now === undefined && typeof playerId === 'number') now = playerId;
+      else {
+        const p = this.player(playerId);
+        if (!p) return false;
+        by = p.id;
+      }
       if (['idle', 'paused', 'gameOver', 'victory', 'levelComplete'].includes(this.phase)) return false;
       this.pausedFrom = this.phase;
       this.pausedAt = now;
+      this.pausedBy = by;
       this.phase = 'paused';
-      this.emit('paused', {});
+      this.emit('paused', by ? { playerId: by } : {});
       return true;
     }
 
-    resume(now) {
+    resume(playerId, now) {
+      let by = null;
+      if (now === undefined && typeof playerId === 'number') now = playerId;
+      else {
+        const p = this.player(playerId);
+        if (!p) return false;
+        by = p.id;
+      }
       if (this.phase !== 'paused') return false;
       const d = now - this.pausedAt;
       const from = this.pausedFrom;
@@ -517,7 +608,8 @@
         for (const k in p.plan) p.plan[k].at += d;
       }
       for (const pile of this.piles) pile.clockStart += d;
-      this.emit('resumed', {});
+      this.pausedBy = null;
+      this.emit('resumed', by ? { playerId: by } : {});
       if (from === 'playing' && !this.blind) {
         this.beginSync(now, 'pause');
       } else {
@@ -574,10 +666,11 @@
               this.emit('starVote', { playerId: id, agree: v.votes[id] });
             }
           }
-          const h = this.human;
-          if (h && v.votes[h.id] === undefined && now >= v.deadline) {
-            v.votes[h.id] = false;
-            this.emit('starVote', { playerId: h.id, agree: false, timeout: true });
+          for (const p of this.players) {
+            if (p.human && v.votes[p.id] === undefined && now >= v.deadline) {
+              v.votes[p.id] = false;
+              this.emit('starVote', { playerId: p.id, agree: false, timeout: true });
+            }
           }
           if (Object.keys(v.pending).length === 0 || Object.values(v.votes).includes(false)) this.checkVote(now);
           break;
@@ -615,9 +708,139 @@
       const total = Math.max(1, n.at - n.planned);
       return Math.max(0, Math.min(1, 1 - (n.at - now) / Math.min(total, 2500)));
     }
+
+    /* ---------- online support ---------- */
+    nextDeadline() {
+      let best = null;
+      const consider = (t) => { if (t != null && (best == null || t < best)) best = t; };
+      switch (this.phase) {
+        case 'sync':
+          if (this.allDownAt != null) consider(this.allDownAt + TIMING.syncHold);
+          else for (const p of this.players) if (!p.human && !p.handDown) consider(p.handDownAt);
+          break;
+        case 'playing':
+          for (const p of this.players) {
+            if (p.human) continue;
+            const n = this.nextBotPlay(p);
+            if (n) consider(n.at);
+          }
+          if (this.botStar) consider(this.botStar.at);
+          break;
+        case 'starVote':
+          for (const id in this.vote.pending) consider(this.vote.pending[id].at);
+          if (this.players.some((p) => p.human && this.vote.votes[p.id] === undefined)) consider(this.vote.deadline);
+          break;
+        case 'resolving':
+          consider(this.resolveUntil);
+          break;
+        default:
+          break;
+      }
+      return best;
+    }
+
+    toJSON() {
+      if (typeof this.rng.state !== 'number') {
+        throw new Error('MindEngine: this rng cannot be saved. Create the engine with opts.seed or opts.rng = Mind.mulberry32(seed).');
+      }
+      const out = { format: STATE_FORMAT, rngState: this.rng.state };
+      for (const k of STATE_KEYS) out[k] = clone(this[k]);
+      return out;
+    }
+
+    static fromJSON(json, opts) {
+      const s = typeof json === 'string' ? JSON.parse(json) : json;
+      if (!s || s.format !== STATE_FORMAT) throw new Error('MindEngine.fromJSON: unsupported state format');
+      const o = opts || {};
+      const e = new MindEngine({
+        players: s.players, variant: s.variantId, difficulty: s.difficultyId, adapt: s.adapt, maxLevel: s.maxLevel,
+        rng: o.rng || mulberry32(s.rngState),
+      });
+      for (const k of STATE_KEYS) e[k] = clone(s[k]);
+      // A bot plan points at a card in that bot's hand; re-link it to the restored hand object.
+      for (const p of e.players) {
+        for (const id in p.plan) {
+          const c = p.plan[id].card;
+          p.plan[id].card = p.hand.find((h) => h.v === c.v && h.pile === c.pile) || c;
+        }
+      }
+      return e;
+    }
+
+    viewFor(playerId) {
+      const me = playerId != null ? this.player(playerId) || null : null;
+      const hide = this.blind && !this.revealed;
+      const v = this.vote;
+      return {
+        you: me ? me.id : null,
+        phase: this.phase,
+        level: this.level,
+        maxLevel: this.maxLevel,
+        lives: this.lives,
+        stars: this.stars,
+        variant: this.variantId,
+        syncReason: this.syncReason || null,
+        pausedFrom: this.phase === 'paused' ? this.pausedFrom : null,
+        pausedBy: this.phase === 'paused' ? this.pausedBy || null : null,
+        piles: this.piles.map((p) => ({
+          id: p.id,
+          dir: p.dir,
+          count: p.cards.length,
+          top: hide ? null : p.top,
+          cards: p.cards.map((c) => ({ v: hide ? null : c.v, by: c.by, at: c.at })),
+        })),
+        discard: this.discard.map((d) => ({ v: d.v, pile: d.pile, by: d.by, reason: d.reason })),
+        lastPlay: this.lastPlay
+          ? { by: this.lastPlay.by, pile: this.lastPlay.pile, at: this.lastPlay.at, v: hide ? null : this.lastPlay.v }
+          : null,
+        vote: v ? { proposer: v.proposer, votes: Object.assign({}, v.votes), deadline: v.deadline, startedAt: v.startedAt } : null,
+        deadlines: {
+          syncHold: this.phase === 'sync' && this.allDownAt != null ? this.allDownAt + TIMING.syncHold : null,
+          resolve: this.phase === 'resolving' ? this.resolveUntil : null,
+          vote: this.phase === 'starVote' && v ? v.deadline : null,
+        },
+        players: this.players.map((p) => ({
+          id: p.id, name: p.name, human: p.human, seat: p.seat, handCount: p.hand.length, handDown: p.handDown,
+        })),
+        hand: me ? me.hand.map((c) => ({ v: c.v, pile: c.pile })) : null,
+        stats: Object.assign({}, this.stats),
+      };
+    }
   }
 
-  const api = { MindEngine, longestRun, LEVELS_BY_PLAYERS, LEVEL_REWARDS, MAX_LIVES, MAX_STARS, VARIANTS, DIFFICULTY, TIMING, mulberry32 };
+  // Removes every hand that does not belong to the viewer: `hands` maps keyed by player id and `hand` fields
+  // on objects that name another player.
+  function stripForeignHands(node, viewer) {
+    if (Array.isArray(node)) {
+      node.forEach((x) => stripForeignHands(x, viewer));
+      return;
+    }
+    if (!node || typeof node !== 'object') return;
+    if (node.hands && typeof node.hands === 'object') {
+      for (const id of Object.keys(node.hands)) if (viewer == null || id !== String(viewer)) delete node.hands[id];
+    }
+    if ('hand' in node) {
+      const owner = node.playerId != null ? node.playerId : node.id;
+      if (viewer == null || owner !== viewer) node.hand = null;
+    }
+    for (const k of Object.keys(node)) stripForeignHands(node[k], viewer);
+  }
+
+  function redactEvent(type, data, forPlayerId, engine) {
+    const d = clone(data || {});
+    const blind = d.blind != null ? !!d.blind : !!(engine && engine.blind);
+    // A Blind card is always played before its level's reveal, so its value, the pile top and the gap
+    // (which is the card value measured from the pile start) stay hidden.
+    if (type === 'play' && blind) {
+      if (d.card) d.card.v = null;
+      d.top = null;
+      d.gap = null;
+    }
+    stripForeignHands(d, forPlayerId);
+    return d;
+  }
+
+  const api = { MindEngine, longestRun, LEVELS_BY_PLAYERS, LEVEL_REWARDS, MAX_LIVES, MAX_STARS, VARIANTS, DIFFICULTY, TIMING, mulberry32, redactEvent };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else global.Mind = api;
 })(typeof window !== 'undefined' ? window : globalThis);

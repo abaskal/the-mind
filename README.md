@@ -37,8 +37,9 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 | File | Purpose |
 |------|---------|
 | `index.html` | The app: page layout, styles, texts (TR/EN), sound, UI and game flow |
-| `engine/mind-engine.js` | Rules engine with no DOM code. Sets `window.Mind` in the browser and exports the same API from Node `require()` |
+| `engine/mind-engine.js` | Rules engine with no DOM code. Sets `window.Mind` in the browser and exports the same API from Node `require()`. Supports 2–4 humans and bots, save/restore (`toJSON`/`fromJSON`), per-player views (`viewFor`) and event redaction (`Mind.redactEvent`) for online play; the API is documented at the top of the file |
 | `test/engine.test.js` | Characterization tests for the engine rules: `npm test` |
+| `test/engine-online.test.js` | Online-readiness tests: several humans, save/restore in all modes, privacy of hands and Blind cards, deadlines, invalid actions |
 | `test/engine-loading.test.js` | Checks that the engine loads with `require()`, as a classic script, and as an ES module |
 | `docs/online/` | Requirements for online multiplayer |
 
