@@ -4,7 +4,19 @@ A browser version of the cooperative card game *The Mind*. You play with 1–3 b
 
 ## Run
 
-Open `index.html` in a browser. You don't need to build or install anything.
+Open `index.html` in a browser. You don't need to build or install anything, and it works straight from disk (`file://`) with no network.
+
+The app is `index.html` plus the rules engine in `engine/mind-engine.js`. The engine is a classic script (not an ES module, because those don't load over `file://`). It has no DOM code and is shared by the game, the tests and, later, the online server.
+
+## Tests
+
+You need Node 20 or newer. There are no dependencies to install.
+
+```bash
+npm test        # runs node --test: test/*.test.js and the legacy game.test.js
+```
+
+CI runs the same command on every push and pull request (`.github/workflows/ci.yml`).
 
 ## Rules
 
@@ -24,7 +36,10 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 
 | File | Purpose |
 |------|---------|
-| `game.js` | Game rules with no UI code (works in the browser and in Node) |
-| `app.js` | UI, bot timing, controls |
-| `index.html`, `style.css` | Page layout and styling |
-| `game.test.js` | Unit tests: `node --test` |
+| `index.html` | The app: page layout, styles, texts (TR/EN), sound, UI and game flow |
+| `engine/mind-engine.js` | Rules engine with no DOM code. Sets `window.Mind` in the browser and exports the same API from Node `require()` |
+| `test/engine.test.js` | Characterization tests for the engine rules: `npm test` |
+| `test/engine-loading.test.js` | Checks that the engine loads with `require()`, as a classic script, and as an ES module |
+| `docs/online/` | Requirements for online multiplayer |
+
+**Legacy (not used by `index.html`):** `game.js`, `app.js`, `style.css`, `index.previous.html` and `game.test.js` belong to an older version of the game. `game.test.js` still runs with `npm test`.
