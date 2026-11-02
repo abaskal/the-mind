@@ -1,10 +1,12 @@
 # The Mind
 
-A browser version of the cooperative card game *The Mind*. You play with 1–3 bot teammates.
+A browser version of the cooperative card game *The Mind*. You play with 1–3 bot teammates, or online with 1–3 friends (**Play online 🌐**, in progress: the lobby is ready, the online table comes next).
 
 ## Run
 
 Open `index.html` in a browser. You don't need to build or install anything, and it works straight from disk (`file://`) with no network.
+
+Online play needs a Supabase project. Until `online-config.js` holds its URL and publishable key, **Play online** is disabled; offline play never touches the network. For local development against `npm run db:start`, see [BACKEND.md → Front-end](docs/online/BACKEND.md#front-end-mind-05).
 
 The app is `index.html` plus the rules engine in `engine/mind-engine.js`. The engine is a classic script (not an ES module, because those don't load over `file://`). It has no DOM code and is shared by the game, the tests and the online server (`room-action`).
 
@@ -50,6 +52,10 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 | `test/room-action-privacy.test.mjs` | Privacy scan of scripted online games in all 4 modes |
 | `test/room-action.e2e.test.mjs` | Two players over HTTP on a local Supabase stack: `npm run test:e2e` |
 | `test/engine-sync.test.js` | Fails if the Edge Functions' engine copy differs from `engine/mind-engine.js` |
+| `online-config.js` | Supabase URL and publishable key for online play. Empty in git; filled at deploy time |
+| `online/` | Online lobby (classic scripts): `online-core.js` (pure helpers), `online-client.js` (supabase-js, Edge Function calls, Realtime) and `online-lobby.js` (Home entry, `#online` and `#lobby` screens) |
+| `test/online-core.test.js`, `test/online-i18n.test.js`, `test/online-wiring.test.js` | Lobby helpers, TR/EN texts, and the offline/online wiring of the page |
+| `test/online-lobby.e2e.test.mjs` | The lobby in Chromium (Playwright) on a local Supabase stack: `npm run test:e2e:lobby` |
 | `docs/online/` | Requirements for online multiplayer, and `BACKEND.md` |
 
 **Legacy (not used by `index.html`):** `game.js`, `app.js`, `style.css`, `index.previous.html` and `game.test.js` belong to an older version of the game. `game.test.js` still runs with `npm test`.

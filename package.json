@@ -9,6 +9,7 @@
     "test": "node --test",
     "test:integration": "ROOMS_TEST_DB_URL=${ROOMS_TEST_DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres} node --test test/rooms-postgres.integration.test.mjs",
     "test:e2e": "SUPABASE_E2E=1 node --test test/room-action.e2e.test.mjs",
+    "test:e2e:lobby": "ONLINE_E2E=1 node --test test/online-lobby.e2e.test.mjs",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
@@ -17,6 +18,7 @@
     "sync-engine": "node -e \"require('fs').copyFileSync('engine/mind-engine.js', 'supabase/functions/_shared/mind-engine.js')\""
   },
   "devDependencies": {
+    "playwright": "1.64.1",
     "postgres": "3.4.9",
     "supabase": "2.122.0"
   }
