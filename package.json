@@ -1,0 +1,11 @@
+{
+  "name": "the-mind",
+  "private": true,
+  "description": "The Mind cooperative card game in the browser: offline single-player, online multiplayer planned.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
