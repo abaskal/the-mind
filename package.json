@@ -6,6 +6,16 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "test:integration": "ROOMS_TEST_DB_URL=${ROOMS_TEST_DB_URL:-postgresql://postgres:postgres@127.0.0.1:54322/postgres} node --test test/rooms-postgres.integration.test.mjs",
+    "db:start": "supabase start",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset",
+    "db:test": "supabase test db",
+    "functions:serve": "supabase functions serve"
+  },
+  "devDependencies": {
+    "postgres": "3.4.9",
+    "supabase": "2.122.0"
   }
 }
