@@ -6,7 +6,9 @@ A browser version of the cooperative card game *The Mind*. You play with 1–3 b
 
 Open `index.html` in a browser. You don't need to build or install anything, and it works straight from disk (`file://`) with no network.
 
-The app is `index.html` plus the rules engine in `engine/mind-engine.js`. The engine is a classic script (not an ES module, because those don't load over `file://`). It has no DOM code and is shared by the game, the tests and, later, the online server.
+The app is `index.html` plus the rules engine in `engine/mind-engine.js`. The engine is a classic script (not an ES module, because those don't load over `file://`). It has no DOM code and is shared by the game, the tests and the online server (`room-action`).
+
+**Changed the engine?** Run `npm run sync-engine` and commit the updated `supabase/functions/_shared/mind-engine.js` too. The Edge Functions load that byte-identical copy, and `npm test` fails if the two files differ.
 
 ## Tests
 
@@ -41,9 +43,13 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 | `test/engine.test.js` | Characterization tests for the engine rules: `npm test` |
 | `test/engine-online.test.js` | Online-readiness tests: several humans, save/restore in all modes, privacy of hands and Blind cards, deadlines, invalid actions |
 | `test/engine-loading.test.js` | Checks that the engine loads with `require()`, as a classic script, and as an ES module |
-| `supabase/` | Online backend (Supabase): migrations, RLS, the `rooms` Edge Function and pgTAP tests. See `docs/online/BACKEND.md` |
+| `supabase/` | Online backend (Supabase): migrations, RLS, the `rooms` (lobby) and `room-action` (gameplay) Edge Functions and pgTAP tests. See `docs/online/BACKEND.md` |
 | `test/rooms.test.mjs` | Lobby rules of the `rooms` function, with an in-memory repository |
 | `test/rooms-postgres.integration.test.mjs` | The same rules on a local Supabase database: `npm run test:integration` |
+| `test/room-action.test.mjs` | Gameplay pipeline of `room-action`: fair ordering, flows, idempotent ticks, authorization |
+| `test/room-action-privacy.test.mjs` | Privacy scan of scripted online games in all 4 modes |
+| `test/room-action.e2e.test.mjs` | Two players over HTTP on a local Supabase stack: `npm run test:e2e` |
+| `test/engine-sync.test.js` | Fails if the Edge Functions' engine copy differs from `engine/mind-engine.js` |
 | `docs/online/` | Requirements for online multiplayer, and `BACKEND.md` |
 
 **Legacy (not used by `index.html`):** `game.js`, `app.js`, `style.css`, `index.previous.html` and `game.test.js` belong to an older version of the game. `game.test.js` still runs with `npm test`.

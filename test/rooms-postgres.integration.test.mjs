@@ -91,7 +91,7 @@ describe('rooms rules on Postgres', { skip: !url && 'set ROOMS_TEST_DB_URL to ru
     await ok(rooms.run(b, 'leave', { roomId: r.roomId }));
     assert.equal((await room(r.roomId)).status, 'abandoned');
     const events = await sql`select seq, type, payload from public.room_events where room_id = ${r.roomId}`;
-    assert.deepEqual(events.map((e) => [e.seq, e.type, e.payload]), [[1, 'gameAborted', { by: 's1' }]]);
+    assert.deepEqual(events.map((e) => [e.seq, e.type, e.payload]), [[1, 'gameAborted', { by: 's1', reason: 'left' }]]);
     assert.ok((await sql`select left_at from public.room_players where room_id = ${r.roomId} and user_id = ${b}`)[0].left_at);
   });
 

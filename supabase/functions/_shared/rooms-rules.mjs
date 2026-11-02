@@ -207,7 +207,7 @@ async function leave(tx, userId, input) {
   } else if (room.status === 'playing') {
     await tx.markPlayerLeft(room.id, userId);
     await tx.updateRoom(room, { status: 'abandoned' });
-    await tx.appendEvent(room.id, 'gameAborted', { by: seatPlayerId(me.seat) });
+    await tx.appendEvent(room.id, 'gameAborted', { by: seatPlayerId(me.seat), reason: 'left' });
   } else {
     await tx.markPlayerLeft(room.id, userId);
   }
