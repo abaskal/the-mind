@@ -1,7 +1,7 @@
 # The Mind Online — Backend
 
 Supabase backend for online play: Postgres with row-level security, anonymous Auth, Realtime and Edge Functions.
-It covers the **lobby** (`rooms`, MIND-03), **gameplay** (`room-action`, MIND-04) and the **lobby UI** that uses them (MIND-05, see [Front-end](#front-end-mind-05)).
+It covers the **lobby** (`rooms`, MIND-03), **gameplay** (`room-action`, MIND-04), and the front-end that uses them: the **lobby UI** (MIND-05, see [Front-end](#front-end-mind-05)) and the **online table** (MIND-06, see [Online table](#online-table-mind-06)).
 
 The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply. The ones that shape this backend:
 
@@ -19,6 +19,7 @@ The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply
 | `supabase/migrations/20261102100000_rooms.sql` | Tables, RLS, Realtime publication, cleanup job |
 | `supabase/migrations/20261102200000_room_action.sql` | `load_room_for_action` and `commit_room_action`, service role only |
 | `supabase/migrations/20261102300000_room_channel.sql` | Realtime Authorization: only room members may join the private channel `room:<roomId>` and track Presence on it |
+| `supabase/migrations/20261103100000_room_version_broadcast.sql` | Every room version change is broadcast as `{ "v": version }` on `room:<roomId>` (MIND-06, see [Version broadcast](#version-broadcast-mind-06)) |
 | `supabase/functions/rooms/index.ts` | Deno entry point of the `rooms` function. It only wires auth and Postgres |
 | `supabase/functions/room-action/index.ts` | Deno entry point of the `room-action` function. It only wires the engine, auth and the RPC repository |
 | `supabase/functions/_shared/rooms-rules.mjs` | Lobby business rules, runtime-agnostic, behind a small repository interface |
@@ -31,13 +32,15 @@ The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply
 | `supabase/functions/_shared/room-action-http.mjs` | HTTP layer of `room-action`: `Server-Timing`, error mapping |
 | `supabase/functions/_shared/http.mjs` | Shared CORS and JSON helpers |
 | `supabase/functions/_shared/mind-engine.js` | **Generated** copy of `engine/mind-engine.js` (`npm run sync-engine`) |
-| `supabase/tests/database/*.test.sql` | pgTAP tests: RLS, schema, cleanup, gameplay commits, the room channel |
+| `supabase/tests/database/*.test.sql` | pgTAP tests: RLS, schema, cleanup, gameplay commits, the room channel, the version broadcast |
 | `test/rooms.test.mjs`, `test/rooms-postgres.integration.test.mjs` | Node tests: lobby rules (in-memory) and on a real database |
 | `test/room-action.test.mjs`, `test/room-action-privacy.test.mjs` | Node tests: gameplay pipeline and the privacy scan |
 | `test/room-action.e2e.test.mjs`, `test/engine-sync.test.js` | Two players over HTTP; the engine copy is identical |
-| `online-config.js`, `online/*.js` | The lobby UI and its client (MIND-05), see [Front-end](#front-end-mind-05) |
+| `online-config.js`, `online/*.js` | The lobby UI and its client (MIND-05), see [Front-end](#front-end-mind-05), and the online table (MIND-06), see [Online table](#online-table-mind-06) |
 | `test/online-core.test.js`, `test/online-i18n.test.js`, `test/online-wiring.test.js` | Node tests: the lobby's pure helpers, TR/EN texts, and how online play is wired into the page |
 | `test/online-lobby.e2e.test.mjs` | The lobby in Chromium (Playwright) against the local stack: `npm run test:e2e:lobby` |
+| `test/online-sync.test.js`, `test/online-proxy.test.mjs` | Node tests: the table's clock, event sequencer, seat rotation and state mapping; the engine proxy against the real `room-action` service |
+| `test/online-game.e2e.test.mjs` | Three players at the online table in Chromium against the local stack: `npm run test:e2e:game` |
 
 ## Schema
 
@@ -145,6 +148,17 @@ The lobby joins one channel per room, named `room:<roomId>` with the room id in 
 | `INSERT`, extension `presence` | Tracking your own Presence |
 
 Both apply only to `authenticated` users who are current members of the room, through `private.is_room_channel_member(realtime.topic())`. That function accepts only `room:<uuid>` topics and then asks `private.is_room_member`, so a player who left is refused at once. Nobody may **send** Broadcast messages on the channel: there is no chat (PRD §5), and game state comes from Postgres.
+
+### Version broadcast (MIND-06)
+
+Postgres Changes are **polled**, and the poller slows down while a table is quiet. In The Mind the table is quiet most of the time, so the other players learned about a play up to about 1.5 s late, against AC1 of MIND-06 (every client within 1 s). Migration `20261103100000_room_version_broadcast.sql` adds a trigger on `rooms`: every `version` change calls `realtime.send({"v": version}, 'version', 'room:<roomId>', private => true)`, which Realtime streams to the channel's members within a few ms. Clients then read what changed through RLS, as before.
+
+- Only the version number is sent: no state and no hand (I2). Only members receive it (the `SELECT` policy above), and clients still cannot send Broadcast messages: the trigger runs inside the server's own writes (I3).
+- `realtime.send()` turns any error into a warning, so a Realtime problem can never fail a game commit.
+- Postgres Changes still arrive, later, and are dropped as duplicates. They remain the fallback.
+- `supabase/tests/database/room_version_broadcast.test.sql` checks one message per version change, the payload, the private flag and the privileges.
+
+This is the one server change in MIND-06. It is additive: no existing table, function or policy changes.
 
 `supabase/tests/database/room_channel.test.sql` checks this through `realtime.authorize()`, the function the Realtime server itself calls: members may join and track Presence, while non-members, members of another room, players who left, `anon` and malformed topics are refused. `realtime.messages` is owned by the Realtime service, which also creates its daily partitions, so that test needs the stack started **with** Realtime.
 
@@ -435,8 +449,65 @@ The lobby UI sits next to the offline game in `index.html`. Its code is in four 
 - **Presence:** each lobby tracks its user on the channel. A seat is *online* while its user has a live connection and *away* otherwise. The host's **Start** works only with 2–4 seated players who are all online.
 - **Share link:** `<origin + path>?room=CODE`. Opening it shows Join with the code filled in and removes `?room=` from the address bar. With a saved nickname, Join has the focus, so joining takes one tap.
 - **Errors:** every backend error code has a TR/EN message (`online.err.*`, mapped by `errorKey`). A network failure says "Can't reach the server" and offers **Try again**. `ALREADY_IN_GAME` offers **Rejoin your room**.
-- **Game start:** when the room becomes `playing`, the lobby shows "Game starting…". If MIND-06 defines `window.MindOnlineTable.enter`, it is called once with `{ roomId, room, players, userId }`.
+- **Game start:** when the room becomes `playing`, the lobby shows "Game starting…" and calls `window.MindOnlineTable.enter({ roomId, room, players, userId })` once, which hands over to the [online table](#online-table-mind-06). A `finished` room hands over too, so a reload on the end screen gets back to it.
 - Nicknames reach the page only through `textContent` or `esc()` (I7). Joins and leaves are announced in `#srLive`.
+
+## Online table (MIND-06)
+
+The online game reuses the offline table: the same `UI` renderer, `App` modals, sounds and animations. Instead of a local `MindEngine`, they read an **online engine proxy** that the server feeds. Three more classic scripts:
+
+| File | What it is |
+|---|---|
+| `online/online-sync.js` | Pure helpers (UMD, tested in Node): the server clock estimate, the event sequencer, seat rotation, the `public_state` → UI mapping, missing-player tracking |
+| `online/online-engine-proxy.js` | The engine proxy (UMD, tested in Node against the real `room-action` service): MindEngine's read interface, `on()` events and action methods |
+| `online/online-table.js` | Takes over from the lobby; Presence pause, the shared pause card, "Reconnecting…", the end of the game, rematch / leave, a game that ends early, and the e2e debug hook |
+
+### Sync model
+
+- **State:** the newest `rooms.public_state` by `version`, plus your own `room_hands` row. Sources: `room-action` replies (`view` = `viewFor(you)`, `version`), Realtime (`rooms` UPDATE, your `room_hands` INSERT/UPDATE) and snapshots. An older version is ignored. A message of the same version can still add what another lacked; for example, an `INVALID_MOVE` reply has no `status`.
+- **Events** (`room_events` INSERT, or the `events` of a reply) drive the animations and sounds. They are emitted **strictly in `seq` order**. Early ones wait in a buffer, and duplicates (the reply and Realtime both carry yours) are dropped. Messages of one commit arrive within a few ms, so the proxy groups them for 20 ms and applies the state first: the existing handlers then read the state their event led to. If your hand row lags behind the public hand count, it waits up to 400 ms more.
+- **Fast path:** the database announces every new version on the channel ([Version broadcast](#version-broadcast-mind-06)). A client that is behind reads the room, its hand and the events after its last `seq` at once (catch-ups are spaced 250 ms apart). If that read fails or is still behind (a busy server), it tries again while the announced version is missing, up to 5 times. Postgres Changes arrive later and are dropped as duplicates.
+- **Gaps:** if a missing `seq` is still missing after 1 s, the proxy fetches a **snapshot**: the room with `public_state`, the seated players, your hand, and the last events. It reads the events after the state, so no event plays twice, and continues from the last `seq`. A snapshot is also taken after a reconnect, when the tab comes back to the foreground, when the browser goes back online, and after `CONFLICT_RETRY` or a failed request.
+- A state change that no event explains (a gap, a resync) makes the table **redraw from the state** (`UI.refresh()`).
+- Other players' hands are placeholders of the right length; only your hand has values (I2). In Blind, a `play` hides the card from everybody, you included; the proxy fills in your own card, which it knows from your hand.
+- No rule is copied (I4): the proxy calls the engine's own `urgent` and `rewardFor`, and the server decides everything else (I1).
+
+### Clock and deadlines
+
+- **Clock:** every `room-action` reply carries `serverNow` (the Postgres clock). The proxy estimates `offset = serverNow + rtt/2 − localNow` and keeps the sample with the **smallest round trip** out of the last 20. It takes 3 samples when the table opens (`tick`, which writes nothing when nothing is due); every action's reply is a sample too, and during a long silence it takes one more every 30 s. Every server time the UI reads (vote deadline, sync-hold start, card times) is converted to local time, so the vote countdown and the sync ring follow the server for everybody.
+- **Deadline ticks:** when the server clock passes `nextDeadlineAt` (from `rooms.next_deadline_at` or a reply), the client sends `tick` after a random 0–150 ms. If the state has not changed 1 s later, it ticks once more, even if the first tick is still on its way (ticks are idempotent; it may be stuck on a server worker that is being replaced). If nothing has moved after 2.5 s, another round (tick + one retry) may start. The proxy arms its **own timer** for each deadline, because browsers slow animation frames under load and stop them in background tabs. The frame loop only adds a faster check.
+- User actions are never sent twice at once, and never retried by themselves: a lost reply could mean the action was applied, and a `play` sent again would play the next card.
+
+### Table and controls
+
+- You sit at the bottom; the others sit **clockwise in seat order** on the existing seat positions. Each player shows their nickname (as text, I7) and a neutral avatar in the **seat's color** (`SEAT_COLORS`).
+- The HUD shows the mode and 🌐. Bot-only features are off: rhythm (difficulty), adaptive tempo, the "tells" lean and its coach tip.
+- Controls match offline: Space or a tap on your card plays it (Dual: ↑/↓ or the card), the hand button or **H** puts your hand down, **S** proposes a star, **Y/N** vote, Refocus, Pause/Resume, and **Enter** starts the next level for everybody.
+- **Feedback:** a card lifts, or a button looks pressed, at once. The card only lands when the server confirms. `INVALID_MOVE` redraws quietly from the state in the reply, with no toast.
+
+### Presence, pause and reconnecting
+
+- Every client watches Presence on `room:<roomId>`. If a seated player has been missing for **5 s** during sync, play or a star vote, a connected client sends `pause`, after a little random delay. A second `pause` just gets `INVALID_MOVE`.
+- The **pause card** opens for everybody on the `paused` event. It says "Waiting for <name>…" while someone is away, and **Resume** works once everybody is back. After a pause in play, resuming starts a new hands-down sync. After **3 minutes** paused (by the server clock, from the `paused` event's time), **End game** appears and calls `endGame`.
+- If your own connection drops, a **Reconnecting…** overlay shows. The channel rejoins by itself, and the table then resyncs. A reload or the Home banner takes you back to your seat and your hand through the lobby.
+- Leaving the table during a game (navigation, the logo, **Leave**) asks first, because it ends the game for everybody (`rooms` → `leave`). The others then see "Game ended — <name> left" and go back to Home.
+
+### End of game
+
+- `victory` / `gameOver` show the offline end screens, built from `public_state.result` (stats, level). The game is saved to the local journal with `online: true` and the nicknames. The journal shows 🌐. **Online games unlock no badges** (v1), and only offline games count toward the "regular" badge.
+- The host sees **Rematch**, which sends everybody back to the lobby (`rematch`); everybody sees **Leave**.
+
+### Shared room channel
+
+The lobby and the table share **one** channel per room: supabase-js returns the same channel for the same topic, and bindings cannot be added once it is subscribed. So `subscribeRoom` creates it with every binding either screen needs (`rooms`, `room_players`, `room_events`, your `room_hands`, Presence), and screens add and remove listeners. Presence stays connected through the hand-over, so nobody looks away when a game starts. The channel closes 3 s after its last listener leaves.
+
+### Debug hook (e2e tests only)
+
+When the local-development override (`theMind.online.dev`) is set, `window.__mindOnlineDebug` exposes `{ version, publicState, seq, status, appliedAt }` of the current table; `appliedAt` maps a version to the wall-clock ms at which this client applied it. It never contains a hand.
+
+### Local edge runtime and timing
+
+The local edge runtime (`supabase start`) runs the functions with `per_worker` and gives each worker **1 s of CPU in total** (2 s hard limit). After that the worker is replaced, and the next request pays a cold start (about 0.5 s, more on a busy machine). Warm `room-action` calls take 5–40 ms. So `npm run test:e2e:game` checks AC1 strictly on how far apart the clients are (each page records when it applied a version: at most 1 s; measured p90 about 200 ms), and only uses a generous end-to-end limit to catch hangs. The real project's limits differ; MIND-07's smoke test measures action latency there (PRD key result 3).
 
 ## Local development
 
@@ -452,6 +523,7 @@ You need Docker and Node 20+. Run `npm install` once; it installs the Supabase C
 | `npm run test:integration` | The rooms rules on the local database. It uses `ROOMS_TEST_DB_URL`, which defaults to the local stack |
 | `npm run test:e2e` | Two anonymous players play Classic level 1 over HTTP against the running local stack. The URL and anon key come from `supabase status`, or from `SUPABASE_E2E_URL` / `SUPABASE_E2E_ANON_KEY` |
 | `npm run test:e2e:lobby` | The online lobby in Chromium against the running local stack: create, share link, join, Presence, start, a full room, errors, the mobile layout, and no request in offline play. Run `npx playwright install chromium` once first. `ONLINE_E2E_SCREENSHOTS=<dir>` also saves lobby screenshots |
+| `npm run test:e2e:game` | Three players at the online table in Chromium against the running local stack: Classic levels 1–2, a mistake, stars (yes, no, timeout), a reload, a disconnect with pause / rejoin / resume / End game, Reverse to game over and rematch, Dual, Blind, reconnecting, and 360×640. It fast-forwards one pause by 3 minutes through the database (`ROOMS_TEST_DB_URL`, the local stack by default). `ONLINE_E2E_RECORD=<dir>` also saves frames of a 2-player level |
 | `npm run sync-engine` | Copies `engine/mind-engine.js` to `supabase/functions/_shared/mind-engine.js`. Run it after every engine change |
 | `npm run db:stop` | Stops the stack |
 
@@ -473,7 +545,7 @@ curl -s "$API/functions/v1/rooms" -H "Authorization: Bearer $TOKEN" -H 'Content-
 CI (`.github/workflows/ci.yml`) has two jobs:
 
 - `test` runs `npm test`.
-- `db-tests` runs `supabase start` (with Realtime, but without Storage, Studio and the other services the tests don't need) and waits for Realtime's `realtime.messages` partitions. It then runs `supabase test db`, `npm run test:integration`, `npm run test:e2e` and, after `npx playwright install --with-deps chromium`, `npm run test:e2e:lobby`.
+- `db-tests` runs `supabase start` (with Realtime, but without Storage, Studio and the other services the tests don't need) and waits for Realtime's `realtime.messages` partitions. It then runs `supabase test db`, `npm run test:integration`, `npm run test:e2e` and, after `npx playwright install --with-deps chromium`, `npm run test:e2e:lobby` and `npm run test:e2e:game`.
 
 ## Secrets (I8)
 

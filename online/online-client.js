@@ -122,33 +122,39 @@
     return ensureSession();
   }
 
-  async function callFunction(name, body) {
+  // One Edge Function call, after one token refresh on 401. → { res, json, sentAt, receivedAt } (local times).
+  async function request(name, body) {
     const { cfg } = await getClient();
     let session = await ensureSession();
     for (let attempt = 0; ; attempt++) {
       let res;
+      let json = null;
+      const sentAt = global.performance.now();
       try {
         res = await global.fetch(cfg.supabaseUrl + '/functions/v1/' + name, {
           method: 'POST',
           headers: { Authorization: 'Bearer ' + session.access_token, apikey: cfg.supabaseKey, 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         });
+        json = await res.json().catch(() => null);
       } catch (e) {
         throw onlineError('NETWORK');
       }
-      let json = null;
-      try {
-        json = await res.json();
-      } catch (e) { /* not JSON: a gateway or proxy error */ }
-      if (res.ok && json) return json;
-      const err = res.ok ? { code: 'INTERNAL' } : Core.errorFromResponse(res.status, json);
-      if (err.code === 'UNAUTHORIZED' && attempt === 0) {
+      const receivedAt = global.performance.now();
+      if (res.status === 401 && attempt === 0) {
         session = await renewSession();
         continue;
       }
       if (res.status >= 502 && res.status <= 504) throw onlineError('NETWORK');
-      throw onlineError(err.code, err.roomId ? { roomId: err.roomId } : undefined);
+      return { res, json, sentAt, receivedAt };
     }
+  }
+
+  async function callFunction(name, body) {
+    const { res, json } = await request(name, body);
+    if (res.ok && json) return json;
+    const err = res.ok ? { code: 'INTERNAL' } : Core.errorFromResponse(res.status, json);
+    throw onlineError(err.code, err.roomId ? { roomId: err.roomId } : undefined);
   }
 
   /** Lobby actions of the `rooms` function: create, join, leave, setVariant. */
@@ -156,6 +162,16 @@
 
   /** Gameplay actions of the `room-action` function (the lobby only uses `start`). */
   const roomAction = (roomId, type, input) => callFunction('room-action', Object.assign({ roomId, type }, input));
+
+  /**
+   * A room-action call for the online table: never throws on 4xx, because INVALID_MOVE carries the current state.
+   * → { status, body, sentAt, receivedAt } (local performance.now() times, for the clock estimate). Throws NETWORK.
+   */
+  async function roomActionRaw(roomId, type, input) {
+    const { res, json, sentAt, receivedAt } = await request('room-action', Object.assign({ roomId, type }, input));
+    const body = json && typeof json === 'object' ? json : { error: { code: res.ok ? 'INTERNAL' : Core.errorFromResponse(res.status, json).code } };
+    return { status: res.status, body, sentAt, receivedAt };
+  }
 
   function readError(result) {
     if (!result.status) return onlineError('NETWORK');
@@ -187,43 +203,201 @@
   }
 
   /**
-   * Joins the room's private channel `room:<roomId>`: Postgres Changes on the room and its seats, and Presence keyed
-   * on the user id. handlers: onChange() (re-read the room), onPresence(state), onStatus('live' | 'down').
-   * → { unsubscribe() }
+   * Everything the online table needs to (re)draw itself, read through RLS: the room with its public_state, the
+   * seated players, your own hand and the latest events (read after the state, so no event is replayed twice; a
+   * newer state arrives over Realtime anyway). → null when the room is gone or you are not seated in it.
    */
-  async function subscribeRoom(roomId, userId, handlers) {
+  async function fetchTable(roomId, userId) {
+    if (!Core.isUuid(roomId)) return null;
+    const { client: c } = await getClient();
+    try {
+      const [r, p, h] = await Promise.all([
+        c.from('rooms').select('id, code, host_id, variant, status, version, public_state, next_deadline_at').eq('id', roomId).maybeSingle(),
+        c.from('room_players').select('user_id, seat, nickname, joined_at').eq('room_id', roomId).is('left_at', null).order('seat'),
+        c.from('room_hands').select('hand, version').eq('room_id', roomId).eq('user_id', userId).maybeSingle(),
+      ]);
+      for (const x of [r, p, h]) if (x.error) throw readError(x);
+      if (!r.data) return null;
+      const e = await c.from('room_events').select('seq, type, payload, created_at').eq('room_id', roomId)
+        .order('seq', { ascending: false }).limit(TABLE_EVENTS);
+      if (e.error) throw readError(e);
+      const events = (e.data || []).map((x) => ({ seq: x.seq, type: x.type, data: x.payload, at: Date.parse(x.created_at) }));
+      let pausedAt = null;
+      if (r.data.public_state && r.data.public_state.phase === 'paused') {
+        let paused = events.find((x) => x.type === 'paused');
+        if (!paused) {
+          const q = await c.from('room_events').select('seq, created_at').eq('room_id', roomId).eq('type', 'paused')
+            .order('seq', { ascending: false }).limit(1);
+          if (!q.error && q.data && q.data[0]) paused = { at: Date.parse(q.data[0].created_at) };
+        }
+        if (paused && Number.isFinite(paused.at)) pausedAt = paused.at;
+      }
+      return { room: r.data, players: p.data || [], hand: h.data || null, events, pausedAt };
+    } catch (err) {
+      if (err && err.name === 'OnlineError') throw err;
+      throw onlineError('NETWORK');
+    }
+  }
+
+  /**
+   * What changed after `afterSeq`, for a quick catch-up: the events after `afterSeq` in order, then the room with its
+   * public_state and your hand. Events are read first, so the state is never older than them (the proxy applies a
+   * state before the events it explains); the state may be newer, and the proxy then reads once more for the rest.
+   * → null when the room is gone.
+   */
+  async function fetchSince(roomId, userId, afterSeq) {
+    if (!Core.isUuid(roomId)) return null;
+    const { client: c } = await getClient();
+    try {
+      const e = await c.from('room_events').select('seq, type, payload, created_at').eq('room_id', roomId)
+        .gt('seq', Number(afterSeq) || 0).order('seq', { ascending: true }).limit(TABLE_EVENTS);
+      if (e.error) throw readError(e);
+      const [r, h] = await Promise.all([
+        c.from('rooms').select('id, code, host_id, variant, status, version, public_state, next_deadline_at').eq('id', roomId).maybeSingle(),
+        c.from('room_hands').select('hand, version').eq('room_id', roomId).eq('user_id', userId).maybeSingle(),
+      ]);
+      for (const x of [r, h]) if (x.error) throw readError(x);
+      if (!r.data) return null;
+      const events = (e.data || []).map((x) => ({ seq: x.seq, type: x.type, data: x.payload, at: Date.parse(x.created_at) }));
+      return { room: r.data, hand: h.data || null, events };
+    } catch (err) {
+      if (err && err.name === 'OnlineError') throw err;
+      throw onlineError('NETWORK');
+    }
+  }
+
+  /*
+   * One private channel per room, `room:<roomId>`, shared by the lobby and the table: supabase-js returns the same
+   * channel object for the same topic, and bindings cannot be added once it is subscribed. So the channel carries
+   * every binding either screen needs, and screens add and remove listeners. Presence stays connected when the lobby
+   * hands over to the table. The channel closes CLOSE_DELAY_MS after its last listener leaves.
+   * DELETE events are not subscribed: Realtime cannot filter them or check them against RLS. A lobby leave also bumps
+   * rooms.version, so the rooms UPDATE covers it.
+   */
+  const CLOSE_DELAY_MS = 3000;
+  const TABLE_EVENTS = 30;
+  const channels = new Map();
+
+  function closeEntry(entry) {
+    clearTimeout(entry.closeTimer);
+    const known = channels.get(entry.roomId);
+    if (known && known.entry === entry) channels.delete(entry.roomId);
+    entry.listeners.clear();
+    entry.client.removeChannel(entry.channel);
+  }
+
+  async function createEntry(roomId, userId) {
     const { client: c } = await getClient();
     await c.realtime.setAuth();
-    const channel = c.channel('room:' + roomId, { config: { private: true, presence: { key: userId } } });
-    const changed = () => handlers.onChange();
-    // A lobby leave deletes the seat and also bumps rooms.version, so the rooms UPDATE covers it. DELETE events are
-    // not subscribed: Realtime cannot filter them or check them against RLS.
-    channel
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'rooms', filter: 'id=eq.' + roomId }, changed)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'room_players', filter: 'room_id=eq.' + roomId }, changed)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'room_players', filter: 'room_id=eq.' + roomId }, changed)
-      .on('presence', { event: 'sync' }, () => handlers.onPresence(channel.presenceState()))
+    const entry = { roomId, userId, client: c, listeners: new Set(), status: 'connecting', presence: {}, closeTimer: null };
+    const each = (fn) => {
+      for (const l of Array.from(entry.listeners)) {
+        try {
+          fn(l);
+        } catch (err) {
+          global.console.error('room channel listener:', err);
+        }
+      }
+    };
+    const pg = (event, table, filter, fn) => entry.channel.on('postgres_changes', { event, schema: 'public', table, filter }, (p) => fn(p.new));
+    entry.channel = c.channel('room:' + roomId, { config: { private: true, presence: { key: userId } } });
+    const room = (row) => each((l) => { if (l.onRoom) l.onRoom(row); if (l.onChange) l.onChange(); });
+    const seat = (row) => each((l) => { if (l.onPlayers) l.onPlayers(row); if (l.onChange) l.onChange(); });
+    const hand = (row) => each((l) => { if (l.onHand) l.onHand(row); });
+    pg('UPDATE', 'rooms', 'id=eq.' + roomId, room);
+    pg('INSERT', 'room_players', 'room_id=eq.' + roomId, seat);
+    pg('UPDATE', 'room_players', 'room_id=eq.' + roomId, seat);
+    pg('INSERT', 'room_events', 'room_id=eq.' + roomId, (row) => each((l) => { if (l.onEvent) l.onEvent(row); }));
+    pg('INSERT', 'room_hands', 'user_id=eq.' + userId, hand);
+    pg('UPDATE', 'room_hands', 'user_id=eq.' + userId, hand);
+    // {"v": version} from the database on every room change (migration 20261103100000): faster than Postgres Changes.
+    entry.channel.on('broadcast', { event: 'version' }, (msg) => {
+      const v = msg && msg.payload ? msg.payload.v : null;
+      each((l) => { if (l.onVersion) l.onVersion(v); });
+    });
+    entry.channel
+      .on('presence', { event: 'sync' }, () => {
+        entry.presence = entry.channel.presenceState();
+        each((l) => { if (l.onPresence) l.onPresence(entry.presence); });
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
-          channel.track({ online_at: new Date().toISOString() }).catch(() => {});
-          handlers.onStatus('live');
-          handlers.onChange();
+          // Presence is tracked once per (re)join: Realtime allows a client only a few Presence updates per 30 s.
+          entry.channel.track({ online_at: new Date().toISOString() }).catch(() => {});
+          entry.status = 'live';
+          each((l) => { if (l.onStatus) l.onStatus('live'); if (l.onChange) l.onChange(); });
         } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
-          handlers.onStatus('down');
+          entry.status = 'down';
+          each((l) => { if (l.onStatus) l.onStatus('down'); });
         }
       });
+    return entry;
+  }
+
+  function channelFor(roomId, userId) {
+    const known = channels.get(roomId);
+    if (known && known.userId === userId) return known.promise;
+    if (known) known.promise.then(closeEntry, () => {});
+    const record = { userId, entry: null, promise: null };
+    record.promise = createEntry(roomId, userId).then((entry) => {
+      record.entry = entry;
+      return entry;
+    });
+    record.promise.catch(() => { if (channels.get(roomId) === record) channels.delete(roomId); });
+    channels.set(roomId, record);
+    return record.promise;
+  }
+
+  /**
+   * Listens on the room's private channel `room:<roomId>`. handlers (all optional):
+   *   onChange()          the room or its seats changed (re-read them); also once the channel is live
+   *   onRoom(row)         rooms UPDATE · onPlayers(row) room_players INSERT/UPDATE
+   *   onEvent(row)        room_events INSERT · onHand(row) your room_hands INSERT/UPDATE
+   *   onVersion(v)        Broadcast `version` from the database: the room is now at version v
+   *   onPresence(state)   Presence keyed on the user id · onStatus('live' | 'down')
+   * → { unsubscribe(), presenceState(), status }
+   */
+  async function subscribeRoom(roomId, userId, handlers) {
+    const entry = await channelFor(roomId, userId);
+    clearTimeout(entry.closeTimer);
+    entry.closeTimer = null;
+    entry.listeners.add(handlers);
+    if (entry.status !== 'connecting') {
+      // The channel is already up (e.g. the lobby handed over): bring this listener up to date.
+      setTimeout(() => {
+        if (!entry.listeners.has(handlers)) return;
+        if (handlers.onStatus) handlers.onStatus(entry.status);
+        if (entry.status === 'live') {
+          if (handlers.onPresence) handlers.onPresence(entry.presence);
+          if (handlers.onChange) handlers.onChange();
+        }
+      }, 0);
+    }
     let closed = false;
     return {
       unsubscribe() {
         if (closed) return;
         closed = true;
-        c.removeChannel(channel);
+        entry.listeners.delete(handlers);
+        if (!entry.listeners.size) entry.closeTimer = setTimeout(() => closeEntry(entry), CLOSE_DELAY_MS);
       },
+      presenceState: () => entry.presence,
+      get status() { return entry.status; },
     };
+  }
+
+  /** Whether the local-development override (theMind.online.dev) is set: e2e tests then get a debug hook. */
+  function devOverride() {
+    try {
+      return Core.resolveConfig(null, global.localStorage.getItem(DEV_CONFIG_KEY)) != null;
+    } catch (e) {
+      return false;
+    }
   }
 
   global.MindOnlineClient = {
     SUPABASE_JS, DEV_CONFIG_KEY,
-    config, configured, loadSdk, currentSession, ensureSession, rooms, roomAction, fetchRoom, subscribeRoom, toError,
+    config, configured, devOverride, loadSdk, currentSession, ensureSession, rooms, roomAction, roomActionRaw, fetchRoom,
+    fetchTable, fetchSince, subscribeRoom, toError,
   };
 })(window);

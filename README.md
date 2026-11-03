@@ -1,6 +1,6 @@
 # The Mind
 
-A browser version of the cooperative card game *The Mind*. You play with 1–3 bot teammates, or online with 1–3 friends (**Play online 🌐**, in progress: the lobby is ready, the online table comes next).
+A browser version of the cooperative card game *The Mind*. You play with 1–3 bot teammates, or online with 1–3 friends (**Play online 🌐**: a lobby, then the same table, synced by the server; deployment comes next).
 
 ## Run
 
@@ -53,9 +53,11 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 | `test/room-action.e2e.test.mjs` | Two players over HTTP on a local Supabase stack: `npm run test:e2e` |
 | `test/engine-sync.test.js` | Fails if the Edge Functions' engine copy differs from `engine/mind-engine.js` |
 | `online-config.js` | Supabase URL and publishable key for online play. Empty in git; filled at deploy time |
-| `online/` | Online lobby (classic scripts): `online-core.js` (pure helpers), `online-client.js` (supabase-js, Edge Function calls, Realtime) and `online-lobby.js` (Home entry, `#online` and `#lobby` screens) |
+| `online/` | Online play (classic scripts): `online-core.js` (pure helpers), `online-client.js` (supabase-js, Edge Function calls, the shared room channel), `online-lobby.js` (Home entry, `#online` and `#lobby` screens), `online-sync.js` (clock, event sequencer, seats, state mapping), `online-engine-proxy.js` (an engine-shaped view of the server's game for the table UI) and `online-table.js` (the online table: hand-over, pause, reconnect, end of game) |
 | `test/online-core.test.js`, `test/online-i18n.test.js`, `test/online-wiring.test.js` | Lobby helpers, TR/EN texts, and the offline/online wiring of the page |
 | `test/online-lobby.e2e.test.mjs` | The lobby in Chromium (Playwright) on a local Supabase stack: `npm run test:e2e:lobby` |
+| `test/online-sync.test.js`, `test/online-proxy.test.mjs` | The online table's clock, event sequencer, seat rotation and state mapping, and its engine proxy against the real gameplay service |
+| `test/online-game.e2e.test.mjs` | Three players at the online table in Chromium on a local Supabase stack: `npm run test:e2e:game` |
 | `docs/online/` | Requirements for online multiplayer, and `BACKEND.md` |
 
 **Legacy (not used by `index.html`):** `game.js`, `app.js`, `style.css`, `index.previous.html` and `game.test.js` belong to an older version of the game. `game.test.js` still runs with `npm test`.

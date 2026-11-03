@@ -28,7 +28,10 @@ test('index.html loads only local files: no http(s) script, stylesheet or image'
 
 test('the online scripts are local classic scripts that load after the app, config first', () => {
   const srcs = [...HTML.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map((m) => m[1]);
-  assert.deepEqual(srcs, ['engine/mind-engine.js', 'online-config.js', 'online/online-core.js', 'online/online-client.js', 'online/online-lobby.js']);
+  assert.deepEqual(srcs, [
+    'engine/mind-engine.js', 'online-config.js', 'online/online-core.js', 'online/online-client.js', 'online/online-lobby.js',
+    'online/online-sync.js', 'online/online-engine-proxy.js', 'online/online-table.js',
+  ]);
   assert.ok(HTML.indexOf('src="online-config.js"') > HTML.indexOf('<script id="mind-app">'));
   for (const s of srcs) assert.ok(fs.existsSync(path.join(ROOT, s)), s);
   assert.doesNotMatch(HTML, /type="module"/);
@@ -41,13 +44,13 @@ test('supabase-js comes from a pinned exact version with Subresource Integrity, 
   assert.match(CLIENT, /integrity: 'sha384-[A-Za-z0-9+/]{64}'/);
   assert.match(CLIENT, /s\.integrity = SUPABASE_JS\.integrity/);
   assert.match(CLIENT, /s\.crossOrigin = 'anonymous'/);
-  for (const f of ['online/online-core.js', 'online/online-lobby.js', 'online-config.js']) {
+  for (const f of ['online/online-core.js', 'online/online-lobby.js', 'online-config.js', 'online/online-sync.js', 'online/online-engine-proxy.js', 'online/online-table.js']) {
     assert.doesNotMatch(read(f), /https?:\/\/(?!example|x\.)/, `${f} must not reference a network URL`);
   }
 });
 
 test('no secret key or service-role JWT in the front-end files (I8)', () => {
-  for (const f of ['index.html', 'online-config.js', 'online/online-core.js', 'online/online-client.js', 'online/online-lobby.js']) {
+  for (const f of ['index.html', 'online-config.js', 'online/online-core.js', 'online/online-client.js', 'online/online-lobby.js', 'online/online-sync.js', 'online/online-engine-proxy.js', 'online/online-table.js']) {
     assert.doesNotMatch(read(f), /sb_secret_[A-Za-z0-9]|eyJhbGci|service_role/, f);
   }
 });
@@ -62,3 +65,28 @@ test('the online code never inserts a nickname as HTML (I7)', () => {
   }
   assert.match(lobby, /'<b>' \+ esc\(snap\.room\.code\) \+ '<\/b>'/);
 });
+
+test('the table writes no nickname as HTML (I7): seat names, votes and messages go through esc()', () => {
+  const table = read('online/online-table.js');
+  for (const m of table.matchAll(/\$\{([^{}`]*)\}/g)) {
+    assert.match(m[1], /^t\(/, `online-table.js inserts something other than a fixed text: \${${m[1]}}`);
+  }
+  assert.match(table, /textContent = names\.length \? t\('online\.game\.waitingFor'/);
+  // In index.html, every place the table UI puts a player's name into HTML uses nameHtml() or esc().
+  assert.match(HTML, /<div class="name">\$\{esc\(m\.name\)\}<\/div>/);
+  for (const site of ['msg.starProposed', 'msg.starRejected']) {
+    assert.match(HTML, new RegExp(`t\\('${site.replace('.', '\\.')}', \\{ who: this\\.nameHtml\\(`), site);
+  }
+  assert.match(HTML, /<span>\$\{this\.nameHtml\(p\.id\)\} \$\{v === true/);
+  assert.match(HTML, /\$\{this\.nameHtml\(o\.playerId\)\} \(\$\{o\.cards\.join/);
+});
+
+test('the online table reuses the engine; it carries no copy of the rules (I4)', () => {
+  const proxy = read('online/online-engine-proxy.js');
+  assert.match(proxy, /Mind\.MindEngine\.prototype\.urgent\.call\(this/);
+  assert.match(proxy, /Mind\.MindEngine\.prototype\.rewardFor\.call\(this/);
+  for (const f of ['online/online-engine-proxy.js', 'online/online-sync.js', 'online/online-table.js']) {
+    assert.doesNotMatch(read(f), /LEVELS_BY_PLAYERS|LEVEL_REWARDS\s*=|longestRun|offenders\.push/, `${f} must not re-implement rules`);
+  }
+});
+

@@ -540,6 +540,15 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
 .lobby-conn:empty { display: none; }
 .starting { text-align: center; padding: 40px 20px; }
 .starting .spin { font-size: 48px; display: inline-block; animation: spin 2.4s linear infinite; }
+
+/* online table (MIND-06) */
+.hand .card.lift { --ty: -34px; filter: brightness(1.18); }
+.btn.pressed, button.pressed { transform: translateY(1px) scale(0.97); filter: brightness(0.82) saturate(0.8); pointer-events: none; }
+.net-overlay { position: fixed; inset: 0; z-index: 66; display: grid; place-items: center; background: rgba(5, 4, 18, 0.55); backdrop-filter: blur(3px); }
+.net-overlay .box { display: flex; gap: 12px; align-items: center; padding: 14px 20px; border-radius: 16px; background: rgba(28, 21, 80, 0.96); border: 1px solid rgba(255, 209, 102, 0.5); font-weight: 800; box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5); }
+.net-overlay .box span:first-child { display: inline-block; animation: spin 1.6s linear infinite; }
+.online-pause .waiting { color: var(--gold); font-weight: 800; }
+.tag.online-tag { padding: 1px 7px; font-size: 12px; vertical-align: middle; }
 @media (max-width: 760px) {
   .lobby-top { grid-template-columns: 1fr; }
   .lobby-bar { flex-direction: column; align-items: stretch; }
@@ -928,6 +937,19 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       'online.err.busy': 'The room is busy. Please try again.',
       'online.err.network': "Can't reach the server.",
       'online.err.internal': 'Something went wrong on the server. Please try again.',
+      'online.game.joining': 'Joining the table…',
+      'online.game.reconnecting': 'Reconnecting…',
+      'online.game.waitingFor': 'Waiting for {names}…',
+      'online.game.pausedBy': '{name} paused the game.',
+      'online.game.resumeHint': 'Resume when everyone is back: you will put your hands down together again.',
+      'online.game.endGame': 'End game',
+      'online.game.endGameHint': 'Paused for 3 minutes: you can end the game for everyone.',
+      'online.game.rematch': 'Rematch',
+      'online.game.waitRematch': 'The host can start a rematch.',
+      'online.game.aborted': 'Game ended — {name} left',
+      'online.game.endedPause': 'Game ended after a long pause',
+      'online.game.closed': 'The game has ended.',
+      'online.game.tag': 'Online game',
     },
 
     tr: {
@@ -1144,6 +1166,19 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       'online.err.busy': 'Oda meşgul. Lütfen tekrar dene.',
       'online.err.network': 'Sunucuya ulaşılamıyor.',
       'online.err.internal': 'Sunucuda bir sorun oluştu. Lütfen tekrar dene.',
+      'online.game.joining': 'Masaya geçiliyor…',
+      'online.game.reconnecting': 'Yeniden bağlanıyor…',
+      'online.game.waitingFor': '{names} bekleniyor…',
+      'online.game.pausedBy': '{name} oyunu duraklattı.',
+      'online.game.resumeHint': 'Herkes döndüğünde devam edin: eller yeniden birlikte masaya konacak.',
+      'online.game.endGame': 'Oyunu bitir',
+      'online.game.endGameHint': '3 dakikadır duraklatıldı: oyunu herkes için bitirebilirsin.',
+      'online.game.rematch': 'Rövanş',
+      'online.game.waitRematch': 'Oda sahibi rövanş başlatabilir.',
+      'online.game.aborted': 'Oyun bitti — {name} ayrıldı',
+      'online.game.endedPause': 'Uzun bir duraklamadan sonra oyun bitti',
+      'online.game.closed': 'Oyun sona erdi.',
+      'online.game.tag': 'Çevrimiçi oyun',
     },
   };
 
@@ -1608,6 +1643,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
   const t = (k, v) => I18N.t(k, v);
   const $ = (s, r) => (r || document).querySelector(s);
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   let svgId = 0;
 
   function shade(hex, amt) {
@@ -1676,7 +1712,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     if (v !== '' && v != null) el.dataset.v = v;
     if (pile) el.dataset.pile = pile;
     const dir = opt.dual ? `<span class="dir">${pile === 'down' ? '▼' : '▲'}</span>` : '';
-    el.innerHTML = `<span class="c1">${v}</span><span class="num">${v}</span><span class="c2">${v}</span>${dir}<span class="emblem">MIND</span>`;
+    const face = v == null ? '' : v;
+    el.innerHTML = `<span class="c1">${face}</span><span class="num">${face}</span><span class="c2">${face}</span>${dir}<span class="emblem">MIND</span>`;
     return el;
   }
 
@@ -1733,6 +1770,9 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       return m && m.human ? t('msg.you') : (m ? m.name : pid);
     },
 
+    // Player names typed by people (online nicknames) are text, never HTML (I7).
+    nameHtml(pid) { return esc(this.name(pid)); },
+
     /* ---------- layout ---------- */
     layoutSeats() {
       const seats = $('#seats');
@@ -1757,7 +1797,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
         el.innerHTML = `
           <div class="avatar mood-neutral" style="--blink:${(i * 1.7).toFixed(1)}s">${avatarSVG(m.look)}<div class="bubble"></div></div>
           <div class="info">
-            <div class="name">${m.name}</div>
+            <div class="name">${esc(m.name)}</div>
             <div class="role">${m.role || ''}</div>
             <div class="handrow"><div class="fan"></div><div class="count"></div></div>
           </div>
@@ -1817,6 +1857,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     /* ---------- HUD ---------- */
     renderHud() {
       const e = this.engine;
+      if (!e) return;
       $('#hudLevel').textContent = Math.max(1, e.level);
       $('#hudMax').textContent = e.maxLevel;
       const track = $('#levelTrack');
@@ -1828,13 +1869,16 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       }
       track.innerHTML = html;
       const s = this.settings;
-      $('#hudMode').textContent = `${t('mode.' + e.variantId + '.t')} · ${t('diff.' + e.difficultyId + '.t')}${s.tells ? ' · 👀' : ' · 🤫'}`;
+      $('#hudMode').textContent = e.online
+        ? `${t('mode.' + e.variantId + '.t')} · 🌐`
+        : `${t('mode.' + e.variantId + '.t')} · ${t('diff.' + e.difficultyId + '.t')}${s.tells ? ' · 👀' : ' · 🤫'}`;
       this.renderLives();
       this.renderStars();
     },
 
     renderLives() {
       const e = this.engine;
+      if (!e) return;
       const el = $('#hudLives');
       const slots = Math.max(e.lives, this.prevLives, e.players.length);
       let html = '';
@@ -1851,6 +1895,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
 
     renderStars() {
       const e = this.engine;
+      if (!e) return;
       const el = $('#hudStars');
       const slots = Math.max(e.stars, this.prevStars, 1);
       let html = '';
@@ -1868,6 +1913,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     /* ---------- table pieces ---------- */
     renderPiles() {
       const e = this.engine;
+      if (!e) return;
       if (this.revealing) return;
       const wrap = $('#piles');
       wrap.innerHTML = '';
@@ -1898,6 +1944,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     pileEl(id) { return document.querySelector(`#piles .pile[data-pile="${id}"]`); },
 
     renderFans() {
+      if (!this.engine) return;
       for (const p of this.engine.players) {
         if (p.human) continue;
         const seat = this.seatEls[p.id];
@@ -1916,11 +1963,12 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     renderHand(deal) {
-      if (this.demo) return;
+      if (this.demo || !this.engine) return;
       const e = this.engine;
       const h = e.human;
       const el = $('#hand');
       el.innerHTML = '';
+      if (!h) return;
       const dual = e.piles.length > 1;
       if (!h.hand.length) {
         el.innerHTML = `<div class="hand-empty">✓</div>`;
@@ -1953,6 +2001,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     renderDiscard() {
+      if (!this.engine) return;
       const el = $('#discardCards');
       el.innerHTML = '';
       for (const d of this.engine.discard) {
@@ -1964,11 +2013,12 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     renderControls() {
-      if (this.demo) return;
+      if (this.demo || !this.engine) return;
       const e = this.engine;
       const h = e.human;
       const sync = e.phase === 'sync';
       const handBtn = $('#handBtn');
+      for (const b of [handBtn, $('#starBtn'), $('#refocusBtn')]) b.classList.remove('pressed');
       handBtn.style.display = sync && !h.handDown ? '' : 'none';
       handBtn.classList.toggle('pulse', sync && !h.handDown);
       const star = $('#starBtn');
@@ -2041,6 +2091,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     sr(text) { $('#srLive').textContent = text; },
 
     fly(o) {
+      // Animations scheduled with setTimeout may fire after the table was closed (a game that ended, or was left).
+      if (!this.engine) return Promise.resolve();
       const to = o.to.getBoundingClientRect ? o.to.getBoundingClientRect() : o.to;
       const from = o.from;
       const w = o.width || to.width;
@@ -2275,7 +2327,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       void this.table.offsetWidth;
       this.table.classList.add('shake');
       this.renderLives();
-      const who = d.offenders.map((o) => `${this.name(o.playerId)} (${o.cards.join(', ')})`).join(` ${t('msg.and')} `);
+      const who = d.offenders.map((o) => `${this.nameHtml(o.playerId)} (${o.cards.join(', ')})`).join(` ${t('msg.and')} `);
       this.message(`${t('msg.tooSoon')}<small>${who} · ${t('msg.lifeLost')}</small>`, 'bad', 2700);
       this.sr(t('sr.mistake', { n: d.lives }));
       this.allMoods('oops', 2400);
@@ -2295,6 +2347,12 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       const dual = this.engine.piles.length > 1;
       if (human) {
         const els = cards.map((c) => document.querySelector(`#hand .card[data-v="${c.v}"]`)).filter(Boolean);
+        if (!els.length) {
+          // Online, the hand may already have been redrawn from a newer state: just show the result.
+          this.renderDiscard();
+          this.renderHand(false);
+          return;
+        }
         els.forEach((el) => el.classList.add(cls));
         setTimeout(() => {
           els.forEach((el, i) => {
@@ -2336,8 +2394,11 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       const vote = $('#vote');
       vote.hidden = false;
       const proposerHuman = this.meta.players[d.proposer].human;
-      $('#voteQ').innerHTML = proposerHuman ? t('msg.starYou') : t('msg.starProposed', { who: this.name(d.proposer) });
-      $('#voteBtns').style.display = d.needsHuman ? '' : 'none';
+      $('#voteQ').innerHTML = proposerHuman ? t('msg.starYou') : t('msg.starProposed', { who: this.nameHtml(d.proposer) });
+      // The proposer already counts as yes, so they never get the vote buttons (offline, needsHuman is then false).
+      $('#voteBtns').style.display = d.needsHuman && !proposerHuman ? '' : 'none';
+      $('#voteYes').classList.remove('pressed');
+      $('#voteNo').classList.remove('pressed');
       $('#voteTimer').parentElement.style.display = d.needsHuman ? '' : 'none';
       this.voteStarted = performance.now();
       this.renderVotes();
@@ -2350,10 +2411,11 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
 
     renderVotes() {
       const e = this.engine;
+      if (!e) return;
       if (!e.vote) return;
       $('#voteVotes').innerHTML = e.players.map((p) => {
         const v = e.vote.votes[p.id];
-        return `<span>${this.name(p.id)} ${v === true ? '✅' : v === false ? '❌' : '⏳'}</span>`;
+        return `<span>${this.nameHtml(p.id)} ${v === true ? '✅' : v === false ? '❌' : '⏳'}</span>`;
       }).join('');
     },
 
@@ -2364,7 +2426,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     onStarRejected(d) {
-      this.message(t('msg.starRejected', { who: this.name(d.by) }), '', 2000);
+      this.message(t('msg.starRejected', { who: this.nameHtml(d.by) }), '', 2000);
       setTimeout(() => { $('#vote').hidden = true; }, 600);
       this.clearBubbles();
     },
@@ -2440,6 +2502,51 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       $('#hand').innerHTML = '';
     },
 
+    /* ---------- online: redraw everything from the state ---------- */
+    // After a resync, or a state change that no event explains, the online table redraws from the engine's state.
+    refresh() {
+      const e = this.engine;
+      if (!e || !e.human) return;
+      const phase = e.phase;
+      if (phase !== 'resolving') this.revealing = false;
+      if (e.blind) this.revealed = !!e.revealed;
+      this.renderHud();
+      this.renderPiles();
+      this.renderFans();
+      this.renderDiscard();
+      if (['levelComplete', 'victory', 'gameOver'].includes(phase)) $('#hand').innerHTML = '';
+      else this.renderHand(false);
+      this.renderControls();
+      const sync = phase === 'sync';
+      this.table.classList.toggle('syncing', sync);
+      this.table.classList.toggle('synced', sync && e.allDownAt != null);
+      for (const p of e.players) {
+        const palm = this.palmEls[p.id];
+        if (palm) palm.className = 'palm' + (sync && p.handDown ? ' down' : '');
+      }
+      if (sync) {
+        const r = e.syncReason;
+        const key = r === 'level' ? 'sync.level' : r === 'mistake' ? 'sync.mistake' : r === 'pause' ? 'sync.pause' : 'sync.refocus';
+        const h = e.human;
+        $('#syncText').textContent = e.allDownAt != null ? t('sync.ready') : t(key, { n: e.level, who: this.refocusBy ? this.name(this.refocusBy) : '' });
+        $('#syncSub').textContent = e.allDownAt != null ? '' : h && h.handDown ? t('sync.waiting') : t('sync.press');
+      }
+      const vote = $('#vote');
+      if (phase === 'starVote' && e.vote) {
+        vote.hidden = false;
+        const proposerHuman = !!(this.meta.players[e.vote.proposer] || {}).human;
+        $('#voteQ').innerHTML = proposerHuman ? t('msg.starYou') : t('msg.starProposed', { who: this.nameHtml(e.vote.proposer) });
+        const mine = e.human ? e.vote.votes[e.human.id] : true;
+        $('#voteBtns').style.display = mine === undefined && !proposerHuman ? '' : 'none';
+        $('#voteYes').classList.remove('pressed');
+        $('#voteNo').classList.remove('pressed');
+        $('#voteTimer').parentElement.style.display = '';
+        this.renderVotes();
+      } else {
+        vote.hidden = true;
+      }
+    },
+
     /* ---------- per-frame ---------- */
     frame(now) {
       const e = this.engine;
@@ -2479,8 +2586,11 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       } else {
         for (const id in this.seatEls) this.seatEls[id].classList.remove('lean');
       }
-      if (e.phase === 'starVote' && this.voteStarted) {
-        const left = Math.max(0, 1 - (now - this.voteStarted) / global.Mind.TIMING.voteTimeout);
+      if (e.phase === 'starVote' && (this.voteStarted || e.online)) {
+        // Online, the countdown follows the server's vote deadline (already in local time), so all players agree.
+        const left = e.online && e.vote && e.vote.deadline != null
+          ? Math.max(0, Math.min(1, (e.vote.deadline - now) / global.Mind.TIMING.voteTimeout))
+          : Math.max(0, 1 - (now - this.voteStarted) / global.Mind.TIMING.voteTimeout);
         $('#voteTimer').style.transform = `scaleX(${left})`;
       }
       this.tension += ((tension || 0) - (this.tension || 0)) * 0.05;
@@ -2525,6 +2635,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     screen: null,
     engine: null,
     demo: false,
+    online: false,
+    onlineHooks: null,
     modes: MODES,
     screens: {},
 
@@ -2556,7 +2668,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       };
       requestAnimationFrame(loop);
       document.addEventListener('visibilitychange', () => {
-        if (document.hidden && this.engine && !this.demo && ['playing', 'sync', 'starVote'].includes(this.engine.phase)) this.pause();
+        if (document.hidden && this.engine && !this.demo && !this.online && ['playing', 'sync', 'starVote'].includes(this.engine.phase)) this.pause();
       });
       global.addEventListener('hashchange', () => {
         const h = location.hash.slice(1);
@@ -2994,10 +3106,13 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       const st = Store.stats();
       const badges = Store.data.badges;
       const rows = Store.data.log.slice(0, 30).map((g) => {
-        const team = g.team.map((id) => (PERSONAS.find((p) => p.id === id) || {}).name || id).join(', ');
+        const team = g.online ? (g.nicknames || []).join(', ') : g.team.map((id) => (PERSONAS.find((p) => p.id === id) || {}).name || id).join(', ');
+        const mode = g.online
+          ? `${t('mode.' + g.variant + '.t')} <span class="tag online-tag" title="${t('online.game.tag')}">🌐</span>`
+          : `${t('mode.' + g.variant + '.t')} · ${t('diff.' + g.difficulty + '.t')}`;
         const res = g.won ? t('log.won') : t('log.reached', { n: g.level, max: g.maxLevel });
         const rate = g.rating ? ['😫', '😕', '😐', '🙂', '😍'][g.rating - 1] : '–';
-        return `<tr><td>${new Date(g.date).toLocaleDateString(I18N.lang)}</td><td>${esc(team)}</td><td>${t('mode.' + g.variant + '.t')} · ${t('diff.' + g.difficulty + '.t')}</td><td>${res}</td><td>${rate}${g.recommend ? ' 👍' : ''}</td></tr>`;
+        return `<tr><td>${new Date(g.date).toLocaleDateString(I18N.lang)}</td><td>${esc(team)}</td><td>${mode}</td><td>${res}</td><td>${rate}${g.recommend ? ' 👍' : ''}</td></tr>`;
       }).join('');
       $('#screen-journal').innerHTML = `
         <div class="wrap">
@@ -3075,14 +3190,48 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     teardownGame() {
+      const hooks = this.online ? this.onlineHooks : null;
       UI.unmount();
       this.engine = null;
+      this.online = false;
+      this.onlineHooks = null;
       this.closeModal();
+      if (hooks && hooks.teardown) hooks.teardown();
+    },
+
+    /* Online table (MIND-06): `engine` is an online engine proxy (online/online-engine-proxy.js) fed by the server.
+       hooks: { quit() → false to stay, resume(), rematch(), leave(), teardown() } from online/online-table.js. */
+    startOnlineGame(engine, meta, hooks) {
+      if (this.engine) this.teardownGame();
+      this.leaveScreen();
+      this.engine = engine;
+      this.demo = false;
+      this.online = true;
+      this.onlineHooks = hooks || {};
+      this.ended = false;
+      this.gameStart = Date.now();
+      this.screen = 'game';
+      this.closeModal();
+      $$('.screen').forEach((x) => x.classList.toggle('active', x.id === 'screen-game'));
+      $$('.nav button').forEach((b) => b.classList.remove('active'));
+      Sound.ensure();
+      // Bot-only features stay off online: the "tells" lean and adaptive tempo.
+      UI.mount(engine, meta, Object.assign({}, this.settings, { tells: false, adapt: false }), false);
+      engine.on('levelStart', (d) => this.onLevelStart(d));
+      engine.on('levelComplete', (d) => this.onLevelComplete(d));
+      engine.on('victory', () => this.onEnd(true));
+      engine.on('gameOver', () => this.onEnd(false));
     },
 
     quitGame() {
       const e = this.engine;
       if (!e) return true;
+      if (this.online) {
+        const hooks = this.onlineHooks;
+        if (hooks && hooks.quit && !hooks.quit()) return false;
+        this.teardownGame();
+        return true;
+      }
       const inProgress = !this.ended && !this.demo && e.level >= 1;
       if (inProgress) {
         if (!confirm(t('confirm.quit'))) return false;
@@ -3097,15 +3246,31 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     humanPlay(pileId) {
       if (!this.engine || this.demo) return;
       Sound.ensure();
+      if (this.online) {
+        // The card lifts at once; it only lands when the server confirms the play.
+        const e = this.engine;
+        const h = e.human;
+        const card = h && (pileId != null ? e.urgent(h, pileId) : e.piles.map((p) => e.urgent(h, p.id)).find(Boolean));
+        if (card && e.humanPlay(pileId, this.now())) {
+          const el = document.querySelector(`#hand .card.playable[data-v="${card.v}"]`);
+          if (el) el.classList.add('lift');
+        }
+        return;
+      }
       this.engine.humanPlay(pileId, this.now());
     },
 
+    // Online: a control looks pressed until the server's answer redraws it.
+    press(sel) {
+      if (this.online) $(sel).classList.add('pressed');
+    },
+
     bindGameControls() {
-      $('#handBtn').addEventListener('click', () => { if (this.engine) { Sound.ensure(); this.engine.placeHand('you', this.now()); } });
-      $('#starBtn').addEventListener('click', () => { if (this.engine) this.engine.proposeStar('you', this.now()); });
-      $('#refocusBtn').addEventListener('click', () => { if (this.engine) this.engine.callRefocus('you', this.now()); });
-      $('#voteYes').addEventListener('click', () => { if (this.engine) this.engine.voteStar(true, this.now()); });
-      $('#voteNo').addEventListener('click', () => { if (this.engine) this.engine.voteStar(false, this.now()); });
+      $('#handBtn').addEventListener('click', () => { if (this.engine) { Sound.ensure(); if (this.engine.placeHand('you', this.now())) this.press('#handBtn'); } });
+      $('#starBtn').addEventListener('click', () => { if (this.engine && this.engine.proposeStar('you', this.now())) this.press('#starBtn'); });
+      $('#refocusBtn').addEventListener('click', () => { if (this.engine && this.engine.callRefocus('you', this.now())) this.press('#refocusBtn'); });
+      $('#voteYes').addEventListener('click', () => { if (this.engine && this.engine.voteStar(true, this.now())) this.press('#voteYes'); });
+      $('#voteNo').addEventListener('click', () => { if (this.engine && this.engine.voteStar(false, this.now())) this.press('#voteNo'); });
       $('#pauseBtn').addEventListener('click', () => this.pause());
       $('#demoCta').addEventListener('click', () => { this.teardownGame(); this.go('setup'); });
       $('#demoClose').addEventListener('click', () => { this.teardownGame(); this.go('home'); });
@@ -3123,6 +3288,10 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       if (this.screen !== 'game' || !this.engine || this.demo) return;
       const e = this.engine;
       const now = this.now();
+      if (this.online) {
+        this.onOnlineKey(ev, k, e, now);
+        return;
+      }
       if (k === ' ' || k === 'Spacebar') {
         ev.preventDefault();
         Sound.ensure();
@@ -3137,6 +3306,24 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       else if (k === 'Escape' || k === 'p' || k === 'P') this.pause();
     },
 
+    // Online controls: the offline keys, plus H to put your hand down. Pressed controls show it at once.
+    onOnlineKey(ev, k, e, now) {
+      const hand = () => { if (e.placeHand('you', now)) this.press('#handBtn'); };
+      if (k === ' ' || k === 'Spacebar') {
+        ev.preventDefault();
+        Sound.ensure();
+        if (e.phase === 'sync') hand();
+        else if (e.phase === 'playing' && e.piles.length === 1) this.humanPlay(null);
+      } else if (k === 'h' || k === 'H') { Sound.ensure(); hand(); }
+      else if (k === 'ArrowUp' && e.pile('up')) { ev.preventDefault(); this.humanPlay('up'); }
+      else if (k === 'ArrowDown' && e.pile('down')) { ev.preventDefault(); this.humanPlay('down'); }
+      else if (k === 's' || k === 'S') { if (e.proposeStar('you', now)) this.press('#starBtn'); }
+      else if (k === 'r' || k === 'R') { if (e.callRefocus('you', now)) this.press('#refocusBtn'); }
+      else if (k === 'y' || k === 'Y') { if (e.voteStar(true, now)) this.press('#voteYes'); }
+      else if (k === 'n' || k === 'N') { if (e.voteStar(false, now)) this.press('#voteNo'); }
+      else if (k === 'Escape' || k === 'p' || k === 'P') this.pause();
+    },
+
     refreshGameLang() {
       if (!this.engine) return;
       UI.renderHud();
@@ -3144,12 +3331,17 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       UI.renderHand(false);
       for (const id in UI.seatEls) {
         const role = UI.seatEls[id].querySelector('.role');
-        if (role) role.textContent = t('persona.' + id + '.t');
+        if (role && !this.online) role.textContent = t('persona.' + id + '.t');
       }
       $('#youChip span:last-child') && ($('#youChip span:last-child').textContent = t('msg.you'));
     },
 
     onLevelStart(d) {
+      // Online, any player may start the next level: everyone's level-complete card closes when it starts.
+      if (this.online) {
+        this.closeModal();
+        return;
+      }
       if (d.level >= 6) {
         this.unlockBadge('lvl6');
         if (this.engine.players.some((p) => p.id === 'ece')) this.unlockBadge('kid');
@@ -3183,7 +3375,16 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
           <p class="muted">${t('lc.next', { n: next })}</p>
           <div class="lc-cards">${Array.from({ length: Math.min(next, 12) }, (_, i) => `<div class="card back" style="animation-delay:${i * 0.06}s"><span class="emblem">MIND</span></div>`).join('')}</div>
           <div class="row"><button class="btn big hot" id="nextLvl" data-primary>🃏 ${t('lc.go', { n: next })} <kbd>Enter</kbd></button></div>`);
-        $('#nextLvl').onclick = () => { this.closeModal(); e.nextLevel(this.now()); };
+        $('#nextLvl').onclick = () => {
+          if (this.online) {
+            // Stays open, pressed, until the next level starts for everybody.
+            const b = $('#nextLvl');
+            if (e.nextLevel(this.now())) { b.disabled = true; b.classList.add('pressed'); }
+            return;
+          }
+          this.closeModal();
+          e.nextLevel(this.now());
+        };
       }, 1300);
     },
 
@@ -3197,7 +3398,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
     },
 
     unlockBadge(id) {
-      if (this.demo) return false;
+      // Online games don't unlock badges in v1.
+      if (this.demo || this.online) return false;
       if (!Store.unlock(id)) return false;
       const b = BADGES.find((x) => x.id === id);
       this.toast(`${b.icon} ${t('badge.unlocked', { name: t('badge.' + id + '.t') })}`);
@@ -3210,7 +3412,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       const entry = {
         id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
         date: new Date().toISOString(),
-        team: e.players.filter((p) => !p.human).map((p) => p.id),
+        team: this.online ? [] : e.players.filter((p) => !p.human).map((p) => p.id),
         players: e.players.map((p) => p.id),
         variant: e.variantId,
         difficulty: e.difficultyId,
@@ -3227,15 +3429,27 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
         recommend: null,
         tags: [],
       };
+      if (this.online) {
+        entry.online = true;
+        entry.nicknames = e.players.map((p) => p.name);
+      }
       Store.addGame(entry);
-      if (Store.data.log.length >= 10) this.unlockBadge('regular');
+      if (Store.data.log.filter((g) => !g.online).length >= 10) this.unlockBadge('regular');
       return entry;
     },
 
     onEnd(won) {
       const e = this.engine;
+      // Online, the end can be noticed twice (the event, or the room's status when the event is late): once is enough.
+      if (this.online && this.ended) return;
       this.ended = true;
       if (this.demo) { setTimeout(() => this.showDemoEnd(), 2000); return; }
+      if (this.online) {
+        if (won) { Sound.victory(); FX.confetti(4); } else { Sound.gameOver(); UI.allMoods('oops', 3000); }
+        const entry = this.logGame(won);
+        setTimeout(() => { if (this.engine === e) this.showEnd(won, entry); }, won ? 1800 : 1500);
+        return;
+      }
       if (won) {
         this.levelBadges(e.level, e.levelMistakes === 0 && !e.levelStarUsed);
         if (e.players.length === 2) this.unlockBadge('club12');
@@ -3285,12 +3499,13 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
             <h3 style="margin-top:14px">${t('review.tags')}</h3>
             <div class="tags" id="reviewTags">${REVIEW_TAGS.map((k) => `<button class="tag" data-tag="${k}">${t('tag.' + k)}</button>`).join('')}</div>
             <p class="muted" id="reviewSaved" style="min-height:20px"></p>
-            ${this.nextChallenge()}
+            ${this.online ? '' : this.nextChallenge()}
           </div>
         </div>
         <div class="row">
+          ${this.online ? this.onlineEndButtons() : `
           <button class="btn big hot" id="againBtn" data-primary>↻ ${t('end.again')}</button>
-          <button class="btn big ghost" id="tableBtn">🪑 ${t('end.table')}</button>
+          <button class="btn big ghost" id="tableBtn">🪑 ${t('end.table')}</button>`}
         </div>`);
       const info = this.shareInfo(won);
       this.drawShareCard($('#shareCanvas'), info);
@@ -3346,8 +3561,25 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
         Sound.click();
         saved();
       };
+      if (this.online) {
+        const hooks = this.onlineHooks || {};
+        const r = $('#rematchBtn');
+        if (r) r.onclick = () => { r.disabled = true; r.classList.add('pressed'); if (hooks.rematch) hooks.rematch(); };
+        $('#leaveBtn').onclick = () => { if (hooks.leave) hooks.leave(); };
+        return;
+      }
       $('#againBtn').onclick = () => this.startGame();
       $('#tableBtn').onclick = () => { this.teardownGame(); this.go('setup'); };
+    },
+
+    // Online end of game: the host can start a rematch (everyone goes back to the lobby); anyone can leave.
+    onlineEndButtons() {
+      const host = this.engine && this.engine.isHost;
+      return host
+        ? `<button class="btn big hot" id="rematchBtn" data-primary>↻ ${t('online.game.rematch')}</button>
+           <button class="btn big ghost" id="leaveBtn">🚪 ${t('online.lobby.leave')}</button>`
+        : `<p class="muted" style="width:100%;margin:0">${t('online.game.waitRematch')}</p>
+           <button class="btn big ghost" id="leaveBtn" data-primary>🚪 ${t('online.lobby.leave')}</button>`;
     },
 
     showDemoEnd() {
@@ -3366,6 +3598,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
 
     pause() {
       const e = this.engine;
+      // Online, the pause card opens for everybody when the server's `paused` event arrives (online-table.js).
+      if (this.online) { if (e) e.pause(this.now()); return; }
       if (!e || this.demo || !e.pause(this.now())) return;
       this.openModal(`
         <div class="big-ico">⏸</div>
@@ -3386,6 +3620,10 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
 
     resume() {
       if (!this.engine) return;
+      if (this.online) {
+        if (this.onlineHooks && this.onlineHooks.resume) this.onlineHooks.resume();
+        return;
+      }
       this.closeModal();
       this.engine.resume(this.now());
     },
@@ -3410,11 +3648,12 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
         level: won ? e.maxLevel : e.level,
         maxLevel: e.maxLevel,
         team: e.players.map((p) => {
-          if (p.human) return { name: t('msg.you'), color: YOU.color };
+          if (p.human) return { name: t('msg.you'), color: this.online ? UI.meta.players[p.id].look.color : YOU.color };
+          if (this.online) return { name: p.name, color: UI.meta.players[p.id].look.color };
           const m = PERSONAS.find((x) => x.id === p.id);
           return { name: m.name, color: m.color };
         }),
-        mode: `${t('mode.' + e.variantId + '.t')} · ${t('diff.' + e.difficultyId + '.t')}`,
+        mode: this.online ? `${t('mode.' + e.variantId + '.t')} · 🌐` : `${t('mode.' + e.variantId + '.t')} · ${t('diff.' + e.difficultyId + '.t')}`,
         stats: t('end.stats', { syncs: e.stats.perfectSyncs, mistakes: e.stats.mistakes, stars: e.stats.starsUsed }),
         date: new Date().toLocaleDateString(I18N.lang, { day: 'numeric', month: 'long', year: 'numeric' }),
       };
@@ -3572,5 +3811,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
   <script id="mind-online-core" src="online/online-core.js"></script>
   <script id="mind-online-client" src="online/online-client.js"></script>
   <script id="mind-online-lobby" src="online/online-lobby.js"></script>
+  <script id="mind-online-sync" src="online/online-sync.js"></script>
+  <script id="mind-online-proxy" src="online/online-engine-proxy.js"></script>
+  <script id="mind-online-table" src="online/online-table.js"></script>
 </body>
 </html>

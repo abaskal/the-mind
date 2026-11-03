@@ -392,8 +392,12 @@
   }
 
   // → false when the room is gone or the player is not seated in it any more.
+  // A finished room still hands over to the table, so a reload on the end screen gets back to it (rematch / leave).
+  const atTable = (room) => !!room && (room.status === 'playing' || room.status === 'finished');
+
   function applySnapshot(snap) {
-    const seated = snap && Core.isActiveStatus(snap.room.status) && snap.players.some((p) => p.user_id === S.me);
+    const open = snap && (Core.isActiveStatus(snap.room.status) || snap.room.status === 'finished');
+    const seated = open && snap.players.some((p) => p.user_id === S.me);
     if (!seated) {
       roomGone();
       return false;
@@ -428,7 +432,7 @@
 
   function paintLobby() {
     const root = $('#screen-lobby');
-    if (S.room && S.room.status === 'playing') {
+    if (atTable(S.room)) {
       paintStarting(root);
       return;
     }
@@ -471,7 +475,8 @@
     paintLive();
   }
 
-  // MIND-06 replaces this placeholder: window.MindOnlineTable.enter({ roomId, room, players, userId }) is called once.
+  // Shown until the online table (online-table.js) takes over: window.MindOnlineTable.enter({ roomId, room, players,
+  // userId }) is called once per game.
   function paintStarting(root) {
     root.innerHTML = `
       <div class="wrap">
@@ -503,7 +508,7 @@
   function paintLive() {
     if (App.screen !== 'lobby') return;
     const root = $('#screen-lobby');
-    const playing = !!S.room && S.room.status === 'playing';
+    const playing = atTable(S.room);
     if (playing !== !!root.querySelector('.starting')) {
       paintLobby();
       return;
