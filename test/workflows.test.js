@@ -42,6 +42,12 @@ test('deploy.yml: push to main and by hand, one deploy at a time', () => {
   assert.match(DEPLOY, /\npermissions:\n {2}contents: read\n/);
 });
 
+test('deploy.yml only ever deploys main, even when started by hand from another branch', () => {
+  assert.match(job(DEPLOY, 'backend'), /\n {4}if: github\.ref == 'refs\/heads\/main'\n/);
+  assert.match(job(DEPLOY, 'site'), /\n {4}needs: backend\n/, 'site is skipped with backend');
+  assert.doesNotMatch(job(DEPLOY, 'site'), /\n {4}if:/, 'site has no condition that could run it without backend');
+});
+
 test('deploy.yml backend: settings check, engine copy, link, db push, functions deploy', () => {
   const b = job(DEPLOY, 'backend');
   const order = [

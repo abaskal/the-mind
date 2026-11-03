@@ -43,7 +43,7 @@ The local stack has these settings in `supabase/config.toml` (`enable_anonymous_
 |---|---|---|
 | `SUPABASE_PROJECT_REF` | **Project Settings → General → Project ID**, e.g. `abcdefghijklmnopqrst` | Variable |
 | `SUPABASE_URL` | `https://<project ref>.supabase.co` (also under **Project Settings → Data API**) | Variable |
-| `SUPABASE_PUBLISHABLE_KEY` | **Project Settings → API Keys → Publishable key**, `sb_publishable_…`. The legacy **anon** key also works | Variable (public by design) |
+| `SUPABASE_PUBLISHABLE_KEY` | **Project Settings → API Keys → Publishable key**, `sb_publishable_…`. Use this one: the legacy **anon** key is accepted too, but it changes whenever the legacy JWT secret is rolled (see [step 11](#11-if-a-secret-leaks)) | Variable (public by design) |
 | `SUPABASE_ACCESS_TOKEN` | Your account (top right) → **Access Tokens → Generate new token**, named for example `the-mind deploy` | **Secret** |
 | `SUPABASE_DB_PASSWORD` | The database password from step 1 | **Secret** |
 
@@ -89,7 +89,7 @@ Without it, `rooms` uses `SUPABASE_DB_URL`, which Supabase provides to every fun
 
 ## 7. The first deploy
 
-Run **Actions → Deploy → Run workflow** (or merge anything into `main`). The workflow has two jobs:
+Run **Actions → Deploy → Run workflow** on `main` (or merge anything into `main`). Started from any other branch, the workflow skips both jobs: production only ever gets what is on `main`, because a migration cannot be undone. The workflow has two jobs:
 
 1. **`backend`:**
    - checks that all five settings exist, and fails with the names of the missing ones;
@@ -169,7 +169,8 @@ The site holds no secret: the publishable key is meant to be public, and everyth
 
 | Leaked | Do this |
 |---|---|
-| Secret key (`sb_secret_…`) or the legacy `service_role` key | **Project Settings → API Keys.** Create a new secret key and **delete the leaked one**. For the legacy JWT keys, roll the JWT secret instead, which also signs everybody out. The Edge Functions get their keys from Supabase, so nothing has to be redeployed |
+| Secret key (`sb_secret_…`) | **Project Settings → API Keys.** Create a new secret key and **delete the leaked one**. The publishable key does not change, and the Edge Functions get their keys from Supabase, so nothing has to be redeployed |
+| The legacy `service_role` key | Roll the legacy **JWT secret** (**Project Settings → JWT Keys**). This signs everybody out and **also replaces the legacy anon key**. If `SUPABASE_PUBLISHABLE_KEY` holds the legacy anon key, set it to the new one (better: switch to the `sb_publishable_…` key) and run **Deploy** again. Until then **Play online** fails, because the site still sends the old key. The Edge Functions get their keys from Supabase |
 | `SUPABASE_ACCESS_TOKEN` | Account → **Access Tokens**: revoke it, generate a new one, and update the GitHub secret |
 | `SUPABASE_DB_PASSWORD` | **Project Settings → Database → Reset database password**. Update the GitHub secret and, if you set it, `ROOMS_DB_URL` (step 6) |
 
@@ -185,5 +186,7 @@ Then remove the secret from the repository history: rewrite it, or ask GitHub su
 | `Engine copy: … differs` | Someone changed `engine/mind-engine.js` without `npm run sync-engine` |
 | `Site packaging: … not a publishable (anon) key` | A secret key was put in `SUPABASE_PUBLISHABLE_KEY` (rotate it, step 11) |
 | The site works but **Play online** is greyed out | The site was deployed before the variables existed: run **Deploy** again |
+| **Play online** fails for everybody right after a key change | The site still holds an old legacy anon key: update `SUPABASE_PUBLISHABLE_KEY` and run **Deploy** again (step 11) |
+| The Deploy jobs show as skipped | It was started from another branch than `main` (step 7) |
 | "Couldn't sign you in" | Anonymous sign-ins are off (step 2), or the auth rate limit was reached |
 | "Can't reach the server" | The project is paused (step 9) |

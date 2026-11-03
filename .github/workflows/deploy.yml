@@ -18,6 +18,9 @@ permissions:
 jobs:
   backend:
     name: backend (Supabase migrations and Edge Functions)
+    # Production only ever gets main: a manual run from another branch is skipped (and `site` with it), because a
+    # migration pushed from an unmerged branch cannot be undone.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
