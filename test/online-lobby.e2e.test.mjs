@@ -244,13 +244,16 @@ describe('online lobby in the browser (local Supabase)', { skip: !enabled && 'se
     await B.page.click('#lobbyStart');
     await Promise.all([B, C, D].map((p) => waitText(p.page, '#screen-lobby', 'Game starting…')));
 
-    // A player of the running game who tries to open another room is offered their room back.
-    await C.page.goto(base + '/#online');
+    // A player of the running game who opens another tab and tries to create a room is offered their room back,
+    // which takes them to the game table (MIND-06).
+    const firstTab = C.page;
+    await C.open(base + '/#online');
     await C.page.click('[data-tab="create"]');
     await C.page.click('#onlineSubmit');
     await waitText(C.page, '#onlineErr', "You're already playing in another room.");
     await C.page.click('#onlineErr [data-act="rejoin"]');
-    await waitText(C.page, '#screen-lobby', 'Game starting…');
+    await C.page.waitForSelector('#screen-game.active', { timeout: 8000 });
+    await firstTab.close();
 
     for (const p of [A, B, C, D, E]) assert.equal(await p.page.locator('img').count(), 0);
     assertNoXss(A, B, C, D, E);
@@ -383,6 +386,25 @@ describe('offline page from file:// (no stack needed)', { skip: !enabled && 'set
     await page.waitForTimeout(1500);
     assert.deepEqual(requests.filter((u) => !u.startsWith('file:') && !u.startsWith('data:')), []);
     assert.ok(requests.some((u) => u.endsWith('/online/online-lobby.js')), 'the local online scripts load from disk');
+    await context.close();
+  });
+
+  it('I5: the offline bots demo still plays through levels with no error and no request (table UI regression)', { timeout: 100_000 }, async () => {
+    const context = await browser.newContext({ viewport: DESKTOP });
+    const page = await context.newPage();
+    const errors = [];
+    const requests = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('request', (r) => requests.push(r.url()));
+    await page.goto(pathToFileURL(path.join(ROOT, 'index.html')).href);
+    await page.click('#demoBtn');
+    await page.waitForSelector('#screen-game.active');
+    // The demo deals, the bots sync and play, and it moves on to level 2 by itself (Relaxed bots wait for big gaps).
+    await page.waitForFunction(() => window.App.engine && window.App.engine.level >= 2, null, { timeout: 75000 });
+    assert.equal(await page.evaluate(() => window.App.online), false);
+    assert.equal(await page.textContent('#hudMode'), 'Classic · Relaxed · 👀', 'the offline HUD keeps rhythm and house rules');
+    assert.deepEqual(errors, []);
+    assert.deepEqual(requests.filter((u) => !u.startsWith('file:') && !u.startsWith('data:')), []);
     await context.close();
   });
 

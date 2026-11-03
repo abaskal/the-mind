@@ -22,7 +22,7 @@ jobs:
   # online lobby in a real browser.
   db-tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -54,3 +54,7 @@ jobs:
         run: |
           eval "$(supabase status -o env | grep -E '^(API_URL|ANON_KEY)=')"
           SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$ANON_KEY" npm run test:e2e:lobby
+      - name: npm run test:e2e:game (online table, three players in Chromium)
+        run: |
+          eval "$(supabase status -o env | grep -E '^(API_URL|ANON_KEY|DB_URL)=')"
+          SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$ANON_KEY" ROOMS_TEST_DB_URL="$DB_URL" npm run test:e2e:game

@@ -40,7 +40,7 @@ test('TR and EN use the same {placeholders}', () => {
 });
 
 test('every key the online code uses is defined in both languages', () => {
-  const sources = ['online/online-lobby.js', 'online/online-client.js', 'online/online-core.js']
+  const sources = ['online/online-lobby.js', 'online/online-client.js', 'online/online-core.js', 'online/online-table.js', 'index.html']
     .map((f) => fs.readFileSync(path.join(ROOT, f), 'utf8')).join('\n');
   const used = new Set();
   for (const m of sources.matchAll(/'((?:online|setup|mode|nav)\.[\w.]+)'/g)) used.add(m[1]);
