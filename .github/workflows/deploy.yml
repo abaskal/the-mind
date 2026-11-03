@@ -1,0 +1,103 @@
+name: Deploy
+
+# Deploys the backend (Supabase) and then the website (GitHub Pages) on every push to main, or by hand.
+# The owner's one-time setup (project, secrets, variables, Pages) is in docs/online/DEPLOY.md.
+# Secrets are only read from `secrets.*` and only handed to the Supabase CLI through the environment (I8).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend (Supabase migrations and Edge Functions)
+    # Production only ever gets main: a manual run from another branch is skipped (and `site` with it), because a
+    # migration pushed from an unmerged branch cannot be undone.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+      SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+      SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+
+      # Fail before touching anything when a setting is missing. Only emptiness is checked; nothing is printed.
+      - name: Check the deploy settings
+        run: |
+          missing=""
+          [ -n "$SUPABASE_ACCESS_TOKEN" ]    || missing="$missing secret SUPABASE_ACCESS_TOKEN,"
+          [ -n "$SUPABASE_DB_PASSWORD" ]     || missing="$missing secret SUPABASE_DB_PASSWORD,"
+          [ -n "$SUPABASE_PROJECT_REF" ]     || missing="$missing variable SUPABASE_PROJECT_REF,"
+          [ -n "$SUPABASE_URL" ]             || missing="$missing variable SUPABASE_URL,"
+          [ -n "$SUPABASE_PUBLISHABLE_KEY" ] || missing="$missing variable SUPABASE_PUBLISHABLE_KEY,"
+          if [ -n "$missing" ]; then
+            echo "::error title=Deploy settings::Missing${missing%,}. Add them under Settings → Secrets and variables → Actions, see docs/online/DEPLOY.md."
+            exit 1
+          fi
+          case "$SUPABASE_URL" in
+            "https://$SUPABASE_PROJECT_REF.supabase.co"|"https://$SUPABASE_PROJECT_REF.supabase.co/") ;;
+            *) echo "::warning title=Deploy settings::SUPABASE_URL does not look like https://<SUPABASE_PROJECT_REF>.supabase.co. The site may point at another project than the one being deployed." ;;
+          esac
+
+      # The Edge Functions load a byte-identical copy of the engine (I4, MIND-04).
+      - name: The functions' engine copy matches engine/mind-engine.js
+        run: |
+          npm run sync-engine
+          if ! git diff --exit-code -- supabase/functions/_shared/mind-engine.js; then
+            echo "::error title=Engine copy::supabase/functions/_shared/mind-engine.js differs from engine/mind-engine.js. Run npm run sync-engine and commit it."
+            exit 1
+          fi
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.122.0
+      - name: supabase link
+        run: supabase link --project-ref "$SUPABASE_PROJECT_REF"
+      - name: supabase db push (migrations)
+        run: supabase db push
+      - name: supabase functions deploy rooms room-action
+        run: supabase functions deploy rooms room-action --project-ref "$SUPABASE_PROJECT_REF"
+
+  site:
+    name: site (GitHub Pages)
+    needs: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      # Only the runtime files, a generated online-config.js (URL + publishable key) and the CSP. See the script.
+      - name: Package the site into _site/
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+        run: node scripts/package-site.mjs _site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

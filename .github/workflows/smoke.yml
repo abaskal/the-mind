@@ -1,0 +1,32 @@
+name: Smoke test (production)
+
+# Two anonymous players play Classic level 1 against the deployed project and every room-action round trip is
+# timed. Fails when a step fails or the p95 is above the limit (PRD key result 3). See docs/online/DEPLOY.md.
+# GitHub's runners are not in Turkey/EU; to measure from there, run `npm run smoke` locally with the same variables.
+on:
+  workflow_dispatch:
+    inputs:
+      max_p95_ms:
+        description: Fail when the p95 room-action round trip is above this many ms
+        required: true
+        default: '400'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+      - run: npm ci --ignore-scripts
+      - name: Smoke test against production
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+          SMOKE_MAX_P95_MS: ${{ inputs.max_p95_ms }}
+        run: node scripts/smoke-online.mjs
