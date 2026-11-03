@@ -250,6 +250,9 @@ describe('online table in the browser (local Supabase)', { skip: !enabled && 'se
     // AC1: Classic levels 1–2, every action agreed by all three within 1 s of each other.
     let v = await playLevel(players);
     assert.deepEqual([v.level, v.lives, v.stars], [1, 3, 1]);
+    // A player who reloads during levelComplete still gets the Next level card (from the state, not the event).
+    await C.page.reload();
+    await C.page.waitForSelector('#screen-game.active', { timeout: 5000 });
     await nextLevel(players, C);
     v = await playLevel(players);
     assert.deepEqual([v.level, v.lives, v.stars], [2, 3, 2], 'a star after level 2');

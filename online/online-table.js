@@ -28,7 +28,7 @@
 
   const T = {
     token: 0, proxy: null, sub: null, roomId: null, userId: null, players: [], presence: {}, missing: new Map(),
-    conn: 'idle', netDown: false, watch: null, pauseSentAt: 0, modal: null, ending: false,
+    conn: 'idle', netDown: false, watch: null, pauseSentAt: 0, modal: null, ending: false, levelCard: null,
   };
 
   function clearActive(roomId) {
@@ -264,10 +264,21 @@
     }
   }
 
+  // The level-complete card (with Next level) normally opens on the `levelComplete` event. A player who reloads or
+  // resyncs during levelComplete gets no such event, so the card is opened from the state.
+  function levelCard() {
+    const p = T.proxy;
+    if (!p || p.phase !== 'levelComplete' || T.levelCard === p.level) return;
+    T.levelCard = p.level;
+    App.onLevelComplete({ level: p.level, reward: null, applied: false, flawless: false });
+  }
+
   function wire(proxy) {
+    proxy.on('levelComplete', (d) => { T.levelCard = d.level; });
     proxy.on('refresh', () => {
       UI.refresh();
       syncPause();
+      levelCard();
     });
     proxy.on('paused', () => openPause());
     proxy.on('resumed', () => closePause());
@@ -311,6 +322,7 @@
     T.netDown = false;
     T.pauseSentAt = 0;
     T.ending = false;
+    T.levelCard = null;
     updateOverlay();
     try {
       delete global.__mindOnlineDebug;

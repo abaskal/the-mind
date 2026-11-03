@@ -240,22 +240,24 @@
   }
 
   /**
-   * What changed after `afterSeq`, for a quick catch-up: the room with its public_state and your hand, then the events
-   * after `afterSeq` in order (read after the state, so the state is never behind them). → null when the room is gone.
+   * What changed after `afterSeq`, for a quick catch-up: the events after `afterSeq` in order, then the room with its
+   * public_state and your hand. Events are read first, so the state is never older than them (the proxy applies a
+   * state before the events it explains); the state may be newer, and the proxy then reads once more for the rest.
+   * → null when the room is gone.
    */
   async function fetchSince(roomId, userId, afterSeq) {
     if (!Core.isUuid(roomId)) return null;
     const { client: c } = await getClient();
     try {
+      const e = await c.from('room_events').select('seq, type, payload, created_at').eq('room_id', roomId)
+        .gt('seq', Number(afterSeq) || 0).order('seq', { ascending: true }).limit(TABLE_EVENTS);
+      if (e.error) throw readError(e);
       const [r, h] = await Promise.all([
         c.from('rooms').select('id, code, host_id, variant, status, version, public_state, next_deadline_at').eq('id', roomId).maybeSingle(),
         c.from('room_hands').select('hand, version').eq('room_id', roomId).eq('user_id', userId).maybeSingle(),
       ]);
       for (const x of [r, h]) if (x.error) throw readError(x);
       if (!r.data) return null;
-      const e = await c.from('room_events').select('seq, type, payload, created_at').eq('room_id', roomId)
-        .gt('seq', Number(afterSeq) || 0).order('seq', { ascending: true }).limit(TABLE_EVENTS);
-      if (e.error) throw readError(e);
       const events = (e.data || []).map((x) => ({ seq: x.seq, type: x.type, data: x.payload, at: Date.parse(x.created_at) }));
       return { room: r.data, hand: h.data || null, events };
     } catch (err) {

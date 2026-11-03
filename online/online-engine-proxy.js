@@ -82,13 +82,17 @@
       this.flushTimer = null;
       this.batchStart = null;
       this.pendingByType = new Map(); // action type → requests on their way
-      this.ownBlindPlays = [];
+      // Blind: the values of your own plays, so your card shows its face to you. By seq once the reply names it;
+      // blindMark is the play still on its way (only one at a time).
+      this.ownBlind = new Map();
+      this.blindMark = null;
       this.tickKey = null;
       this.deadlineTimer = null;
       this.lastSampleAt = 0;
       this.timers = new Set();
       this.resyncing = false;
       this.resyncAgain = false;
+      this.syncWaiters = []; // resolved by the next snapshot that starts after they were added and succeeds
       this.catchingUp = false;
       this.catchUpAgain = false;
       this.lastCatchUp = -Infinity;
@@ -327,9 +331,15 @@
       if (ev.type === 'paused') this.pausedAt = ev.at != null ? ev.at : this.serverNow();
       if (ev.type === 'resumed') this.pausedAt = null;
       // A Blind play hides the card from everybody, you included; your own card is yours to see (I2).
-      if (ev.type === 'play' && data.playerId === this.me && data.card && data.card.v == null && this.ownBlindPlays.length) {
-        data.card.v = this.ownBlindPlays.shift().v;
+      if (ev.type === 'play' && data.playerId === this.me && data.card && data.card.v == null) {
+        if (this.ownBlind.has(ev.seq)) data.card.v = this.ownBlind.get(ev.seq);
+        else if (this.blindMark && !this.blindMark.used) {
+          // The event came before the reply (e.g. a catch-up): it can only be the play on its way.
+          this.blindMark.used = true;
+          data.card.v = this.blindMark.v;
+        }
       }
+      for (const seq of this.ownBlind.keys()) if (seq <= ev.seq) this.ownBlind.delete(seq);
       this.emit(ev.type, data);
     }
 
@@ -439,10 +449,14 @@
         return;
       }
       this.resyncing = true;
+      const served = this.syncWaiters;
+      this.syncWaiters = [];
+      let done = false;
       try {
         const snap = await this.transport.snapshot();
         if (this.disposed) return;
         if (!snap || !snap.room) {
+          done = true;
           this.signal('status', { status: 'gone', previous: this.status });
           return;
         }
@@ -451,12 +465,15 @@
         const events = snap.events || [];
         const lastSeq = events.reduce((m, e) => Math.max(m, e.seq), 0);
         this.seq.reset(Math.max(lastSeq, this.seq.lastSeq));
+        done = true;
         this.signal('resynced', { reason });
       } catch (err) {
         if (this.disposed) return;
         this.signal('netError', { code: (err && err.code) || 'NETWORK' });
         this.later(RESYNC_RETRY_MS, () => this.resync('retry'));
       } finally {
+        if (done) served.forEach((f) => f());
+        else this.syncWaiters = served.concat(this.syncWaiters);
         this.resyncing = false;
         if (this.resyncAgain && !this.disposed) {
           this.resyncAgain = false;
@@ -498,10 +515,15 @@
       }
       this.catchingUp = true;
       this.lastCatchUp = this.now();
+      // Every event up to this announced version is visible by the time its broadcast arrives.
+      const covered = this.announced;
+      let eventsMayLag = false;
       try {
         const snap = await this.transport.since(this.seq.lastSeq);
         if (!this.disposed && snap && snap.room) {
           const r = snap.room;
+          // The state was read after the events: a newer commit may have landed in between, whose events come next.
+          eventsMayLag = r.version > covered;
           this.offerState({ version: r.version, ps: r.public_state, status: r.status, nextDeadlineAt: parseTime(r.next_deadline_at), hostId: r.host_id });
           if (snap.hand) this.offerHand({ hand: snap.hand.hand, version: snap.hand.version });
           for (const e of snap.events || []) this.offerEvent(e);
@@ -511,7 +533,7 @@
       if (this.disposed) return;
       // A read that failed or was a little behind (a busy server) is tried again while the announced version is
       // still missing, a few times; after that the 1 s gap snapshot and Postgres Changes still bring it.
-      const missed = this.behindAnnounced();
+      const missed = this.behindAnnounced() || eventsMayLag;
       if (missed) this.catchUpMisses++;
       if (this.catchUpAgain || (missed && this.catchUpMisses < CATCH_UP_TRIES)) {
         this.catchUpAgain = false;
@@ -526,6 +548,7 @@
     async send(type, input, parallel) {
       if (this.disposed || (!parallel && this.inflight(type))) return { ok: false, code: 'BUSY' };
       this.pendingByType.set(type, (this.pendingByType.get(type) || 0) + 1);
+      const release = () => this.pendingByType.set(type, this.pendingByType.get(type) - 1);
       let res = null;
       let code = null;
       try {
@@ -533,21 +556,50 @@
       } catch (err) {
         code = (err && err.code) || 'NETWORK';
       }
-      this.pendingByType.set(type, this.pendingByType.get(type) - 1);
       if (this.disposed) return { ok: false, code: 'DISPOSED' };
       if (res) {
+        if (type === 'play') this.noteOwnBlindPlay(res.body);
         this.ingestResponse(res);
+        // The reply's state goes in before the action is free again: until then your hand still holds the card
+        // just played, and a second `play` would play your next card.
+        this.flush(true);
         code = res.status === 200 ? null : errorCode(res.body);
       }
       const ok = code == null;
+      const unknown = code === 'NETWORK' || code === 'INTERNAL';
+      if (unknown && type !== 'tick') {
+        // The action may have been applied without us hearing back: it stays blocked until a fresh snapshot says
+        // where the table is.
+        this.afterFreshSnapshot('action-failed').then(release);
+      } else {
+        release();
+      }
       if (!ok) {
-        // INVALID_MOVE carries the current state, which ingestResponse applied: a quiet resync, no toast.
+        // INVALID_MOVE carries the current state, which was just applied: a quiet resync, no toast.
         if (code === 'CONFLICT_RETRY') this.resync('conflict');
-        else if (code === 'NETWORK' || code === 'INTERNAL') this.later(1000, () => this.resync('action-failed'));
+        else if (unknown && type === 'tick') this.later(1000, () => this.resync('action-failed'));
         if (type !== 'tick') this.signal('refresh');
       }
       if (type !== 'tick') this.signal('actionDone', { type, ok, code });
       return { ok, code };
+    }
+
+    /** Resolves once a snapshot taken after this call has been applied (retrying until one succeeds). */
+    afterFreshSnapshot(reason) {
+      return new Promise((resolve) => {
+        this.syncWaiters.push(resolve);
+        this.resync(reason);
+      });
+    }
+
+    // The reply to your Blind play names its seq: remember your card's value under it.
+    noteOwnBlindPlay(body) {
+      const mark = this.blindMark;
+      if (!mark || mark.used || !body || !Array.isArray(body.events)) return;
+      const ev = body.events.find((e) => e.type === 'play' && e.data && e.data.playerId === this.me);
+      if (!ev) return;
+      mark.used = true;
+      if (ev.seq > this.seq.lastSeq) this.ownBlind.set(ev.seq, mark.v);
     }
 
     // Sends an action unless the same one is still on its way. → true when sent (the UI then shows it pressed).
@@ -568,11 +620,10 @@
       if (this.phase !== 'playing' || !h || !h.hand.length || this.inflight('play')) return false;
       if (pileId != null && (!this.pile(pileId) || !this.urgent(h, pileId))) return false;
       const card = pileId != null ? this.urgent(h, pileId) : this.piles.map((p) => this.urgent(h, p.id)).find(Boolean);
-      const mark = this.blind && card ? { v: card.v } : null;
-      if (mark) this.ownBlindPlays.push(mark);
-      this.send('play', pileId != null ? { pileId } : {}).then((r) => {
-        const i = mark && !r.ok ? this.ownBlindPlays.indexOf(mark) : -1;
-        if (i >= 0) this.ownBlindPlays.splice(i, 1);
+      const mark = this.blind && card ? { v: card.v, used: false } : null;
+      this.blindMark = mark;
+      this.send('play', pileId != null ? { pileId } : {}).then(() => {
+        if (this.blindMark === mark) this.blindMark = null;
       });
       return true;
     }
@@ -658,6 +709,7 @@
 
     dispose() {
       this.disposed = true;
+      for (const f of this.syncWaiters.splice(0)) f();
       if (this.flushTimer != null) this.cancel(this.flushTimer);
       if (this.deadlineTimer != null) this.cancel(this.deadlineTimer);
       this.deadlineTimer = null;

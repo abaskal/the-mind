@@ -87,6 +87,7 @@ function harness({ players = 2, variant = 'classic', seed = 7 } = {}) {
 
   h.snapshot = (u) => async () => {
     h.snapshots[u] = (h.snapshots[u] || 0) + 1;
+    if (h.snapshotDelayMs) await new Promise((r) => h.schedule(r, h.snapshotDelayMs));
     const r = h.room();
     return {
       room: { id: ROOM, code: r.code, host_id: r.hostId, variant: r.variant, status: r.status, version: r.version, public_state: copy(r.publicState), next_deadline_at: r.nextDeadlineAt == null ? null : iso(r.nextDeadlineAt) },
@@ -119,13 +120,16 @@ function harness({ players = 2, variant = 'classic', seed = 7 } = {}) {
         return { status: r.status, body: copy(r.body), sentAt, receivedAt: h.local };
       },
       snapshot: h.snapshot(u),
+      // Like the client: the events first, then the state (so the state is never older than the events).
       since: async (afterSeq) => {
         h.sinceCalls = (h.sinceCalls || 0) + 1;
         const r = h.room();
+        const events = r.events.filter((e) => e.seq > afterSeq).map((e) => ({ seq: e.seq, type: e.type, data: copy(e.payload), at: h.createdAt.get(e.seq) }));
+        if (h.betweenReads) await h.betweenReads();
         return {
           room: { id: ROOM, host_id: r.hostId, status: r.status, version: r.version, public_state: copy(r.publicState), next_deadline_at: r.nextDeadlineAt == null ? null : iso(r.nextDeadlineAt) },
           hand: r.hands.has(u) ? copy(r.hands.get(u)) : null,
-          events: r.events.filter((e) => e.seq > afterSeq).map((e) => ({ seq: e.seq, type: e.type, data: copy(e.payload), at: h.createdAt.get(e.seq) })),
+          events,
         };
       },
     };
@@ -351,6 +355,133 @@ describe('online engine proxy', () => {
     assert.equal(ticks(), before + 2);
     assert.equal(h.room().publicState.phase, 'playing');
     assert.equal(a.proxy.phase, 'playing');
+  });
+
+  // Plays the table into `playing` with every hand down (no Realtime needed: both proxies are driven here).
+  async function toPlaying(h, list) {
+    for (const x of list) x.proxy.placeHand();
+    await h.run(50);
+    for (const seat of [0, 1].filter((s) => !list.some((x) => x.proxy.me === 's' + s))) await h.send(USERS[seat], 'handDown');
+    await h.run(Mind.TIMING.syncHold + 400);
+    assert.equal(h.room().publicState.phase, 'playing');
+  }
+
+  it('a play is not free again until its reply is applied, so a quick second tap cannot play the next card', async () => {
+    const h = harness({ players: 2, seed: 11 });
+    const a = h.proxy(0);
+    const b = h.proxy(1);
+    await h.start([a, b]);
+    await h.run(50);
+    await h.send(USERS[0], 'nextLevel').catch(() => {});
+    await toPlaying(h, [a, b]);
+    const first = a.proxy.human.hand[0].v;
+    assert.equal(a.proxy.humanPlay(null), true);
+    assert.equal(a.proxy.humanPlay(null), false, 'a second tap while the first is on its way');
+    await settle(); // the reply is in; no timer has run (the 20 ms flush would be one)
+    assert.equal(a.proxy.inflight('play'), false);
+    assert.equal(a.proxy.human.hand.some((c) => c.v === first), false, 'the played card is gone from the hand the moment play is free');
+    assert.equal(a.calls.filter((c) => c === 'play').length, 1);
+  });
+
+  it('after a play whose reply was lost, play stays blocked until a fresh snapshot', async () => {
+    const h = harness({ players: 2 });
+    const a = h.proxy(0);
+    const b = h.proxy(1);
+    await h.start([a, b]);
+    await toPlaying(h, [a, b]);
+    h.failNext = 1;
+    h.snapshotDelayMs = 200;
+    const snaps = h.snapshots[a.userId] || 0;
+    assert.equal(a.proxy.humanPlay(null), true);
+    await h.run(100);
+    assert.equal(a.proxy.inflight('play'), true, 'blocked: the play may have been applied');
+    assert.equal(a.proxy.humanPlay(null), false);
+    await h.run(200);
+    assert.equal(h.snapshots[a.userId], snaps + 1);
+    assert.equal(a.proxy.inflight('play'), false);
+    assert.equal(a.proxy.humanPlay(null), true);
+  });
+
+  it('Blind: your own card keeps its value after a resync skipped one of your plays', async () => {
+    const h = harness({ players: 2, variant: 'blind', seed: 5 });
+    const a = h.proxy(0);
+    await h.start([a]);
+    // Level 2: two cards each.
+    a.proxy.placeHand();
+    await h.run(50);
+    await h.send(USERS[1], 'handDown');
+    await h.run(Mind.TIMING.syncHold + 400);
+    await h.send(USERS[1], 'play');
+    await h.send(USERS[0], 'play');
+    await h.run(Mind.TIMING.mistakePause + 4000);
+    a.proxy.tick(h.local);
+    await h.run(500);
+    if (h.room().publicState.phase === 'levelComplete') { await h.send(USERS[0], 'nextLevel'); await h.run(100); }
+    assert.equal(h.room().publicState.level, 2);
+    a.proxy.placeHand();
+    await h.run(50);
+    await h.send(USERS[1], 'handDown');
+    await h.run(Mind.TIMING.syncHold + 400);
+    assert.equal(a.proxy.phase, 'playing');
+    // Another player's play is lost on its way; your play's events wait behind it; the gap resync skips them.
+    h.auto = false;
+    await h.send(USERS[1], 'play');
+    h.published = [];
+    const [c1, c2] = a.proxy.human.hand.map((c) => c.v);
+    assert.equal(a.proxy.humanPlay(null), true);
+    await h.run(1500);
+    assert.equal(a.events.filter((e) => e.type === 'play' && e.data.playerId === 's0' && e.data.card.v === c1).length, 0, 'that play was skipped by the resync');
+    h.auto = true;
+    assert.equal(a.proxy.humanPlay(null), true);
+    await h.run(100);
+    const mine = a.events.filter((e) => e.type === 'play' && e.data.playerId === 's0').at(-1);
+    assert.equal(mine.data.card.v, c2, 'your second card shows its own value');
+  });
+
+  it('Blind: your own card shows its value when its event comes after the reply, behind a gap that then fills', async () => {
+    const h = harness({ players: 2, variant: 'blind', seed: 5 });
+    const a = h.proxy(0);
+    await h.start([a]);
+    a.proxy.placeHand();
+    await h.run(50);
+    await h.send(USERS[1], 'handDown');
+    await h.run(Mind.TIMING.syncHold + 400);
+    assert.equal(a.proxy.phase, 'playing');
+    h.auto = false;
+    await h.send(USERS[1], 'play'); // its event is late
+    const late = h.published.filter((m) => m.kind === 'event');
+    h.published = [];
+    const mine = a.proxy.human.hand[0].v;
+    assert.equal(a.proxy.humanPlay(null), true);
+    await h.run(100); // the reply is in; its events wait behind the late one
+    assert.equal(a.events.filter((e) => e.type === 'play' && e.data.playerId === 's0').length, 0);
+    for (const m of late) a.proxy.ingestEventRow(copy(m.row)); // the gap fills within 1 s
+    await h.run(100);
+    const play = a.events.find((e) => e.type === 'play' && e.data.playerId === 's0');
+    assert.equal(play.data.card.v, mine);
+  });
+
+  it('a catch-up whose state is newer than its events reads once more for the missing events', async () => {
+    const h = harness({ players: 2 });
+    const a = h.proxy(0);
+    const b = h.proxy(1);
+    await h.start([a, b]);
+    h.auto = false;
+    await h.send(USERS[1], 'handDown');
+    const announced = h.room().version;
+    // A commit lands between the events read and the state read of a's catch-up.
+    let once = true;
+    h.betweenReads = async () => { if (once) { once = false; await h.send(USERS[0], 'pause'); } };
+    h.sinceCalls = 0;
+    a.proxy.noteVersion(announced);
+    await h.run(30);
+    h.betweenReads = null;
+    assert.equal(a.proxy.version, h.room().version, 'the newer state is in');
+    assert.notEqual(a.events.at(-1).type, 'paused', 'its event was not in that read');
+    await h.run(400);
+    assert.equal(h.sinceCalls, 2, 'one more read');
+    assert.equal(a.events.at(-1).type, 'paused');
+    assert.deepEqual(a.events.map((e) => e.type), h.room().events.map((e) => e.type));
   });
 
   it('when a tick and its retry both fail, a new round starts 2.5 s later', async () => {
