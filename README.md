@@ -1,6 +1,6 @@
 # The Mind
 
-A browser version of the cooperative card game *The Mind*. You play with 1–3 bot teammates, or online with 1–3 friends (**Play online 🌐**: a lobby, then the same table, synced by the server; deployment comes next).
+A browser version of the cooperative card game *The Mind*. You play with 1–3 bot teammates, or online with 1–3 friends (**Play online 🌐**: a lobby, then the same table, synced by the server).
 
 ## Run
 
@@ -11,6 +11,36 @@ Online play needs a Supabase project. Until `online-config.js` holds its URL and
 The app is `index.html` plus the rules engine in `engine/mind-engine.js`. The engine is a classic script (not an ES module, because those don't load over `file://`). It has no DOM code and is shared by the game, the tests and the online server (`room-action`).
 
 **Changed the engine?** Run `npm run sync-engine` and commit the updated `supabase/functions/_shared/mind-engine.js` too. The Edge Functions load that byte-identical copy, and `npm test` fails if the two files differ.
+
+## Play online
+
+**Play:** `https://abaskal.github.io/the-mind/` (live once the first deploy has run, see below). Choose **Play online 🌐**, pick a nickname, create a room and send the link to 1–3 friends. There are no accounts and no email: a nickname and an anonymous session are enough. Rooms are deleted 24 hours after their last activity.
+
+**How it is built:**
+- The site is static and lives on GitHub Pages.
+- The server is a Supabase project: Postgres with row-level security, anonymous Auth, Realtime, and the Edge Functions `rooms` (lobby) and `room-action` (the referee).
+- Every push to `main` deploys both through `.github/workflows/deploy.yml`.
+
+**Deploying it yourself:** the one-time setup (Supabase project, GitHub secrets and variables, Pages) is in [docs/online/DEPLOY.md](docs/online/DEPLOY.md). Then:
+- `npm run smoke` (or the **Smoke test (production)** workflow) checks the live backend;
+- [docs/online/PLAYTEST.md](docs/online/PLAYTEST.md) is the checklist for a test with 4 real devices.
+
+**Local development:**
+- `npm install` and Docker, then `npm run db:start` for the local Supabase stack.
+- Point the page at it with the `theMind.online.dev` override and serve the folder over HTTP, see [BACKEND.md → Front-end](docs/online/BACKEND.md#front-end-mind-05).
+- `npm run package-site` builds the deployable `_site/`, see [DEPLOY.md](docs/online/DEPLOY.md#7-the-first-deploy).
+
+**Tests for online play:**
+
+| Command | What it checks |
+|---|---|
+| `npm test` | Rules, lobby and table logic, packaging and workflow checks; needs no network |
+| `npm run test:e2e:lobby` | The lobby in a browser, against the local stack |
+| `npm run test:e2e:game` | Three players at the table, against the local stack |
+| `npm run test:e2e:site` | The packaged site under its Content-Security-Policy, against the local stack |
+| `npm run smoke` | Two players play level 1 against any project and the p95 round trip is measured |
+
+How the online game works: [docs/online/BACKEND.md](docs/online/BACKEND.md). Requirements: [docs/online/PRD-the-mind-online.md](docs/online/PRD-the-mind-online.md).
 
 ## Tests
 
@@ -58,6 +88,10 @@ Each bot waits about `500ms + gap × pace` (±15% jitter) before playing. `gap` 
 | `test/online-lobby.e2e.test.mjs` | The lobby in Chromium (Playwright) on a local Supabase stack: `npm run test:e2e:lobby` |
 | `test/online-sync.test.js`, `test/online-proxy.test.mjs` | The online table's clock, event sequencer, seat rotation and state mapping, and its engine proxy against the real gameplay service |
 | `test/online-game.e2e.test.mjs` | Three players at the online table in Chromium on a local Supabase stack: `npm run test:e2e:game` |
-| `docs/online/` | Requirements for online multiplayer, and `BACKEND.md` |
+| `scripts/package-site.mjs` | Packages the deployable site into `_site/`: the runtime files, a generated `online-config.js` and the CSP (`npm run package-site`) |
+| `scripts/smoke-online.mjs` | Online smoke test: two players play level 1, p95 of the round trips (`npm run smoke`) |
+| `.github/workflows/deploy.yml`, `smoke.yml` | Deploy on every push to `main` (Supabase, then GitHub Pages), and the smoke test against production (by hand) |
+| `test/package-site.test.mjs`, `test/workflows.test.js`, `test/site.e2e.test.mjs` | The packaging, the deploy workflow's contract, and the packaged site in a browser (`npm run test:e2e:site`) |
+| `docs/online/` | Requirements for online multiplayer, `BACKEND.md`, `DEPLOY.md` (deploy guide) and `PLAYTEST.md` (4-device checklist) |
 
 **Legacy (not used by `index.html`):** `game.js`, `app.js`, `style.css`, `index.previous.html` and `game.test.js` belong to an older version of the game. `game.test.js` still runs with `npm test`.

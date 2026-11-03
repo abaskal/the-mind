@@ -41,6 +41,9 @@ The hard rules in [PRD-the-mind-online.md](./PRD-the-mind-online.md) §7.3 apply
 | `test/online-lobby.e2e.test.mjs` | The lobby in Chromium (Playwright) against the local stack: `npm run test:e2e:lobby` |
 | `test/online-sync.test.js`, `test/online-proxy.test.mjs` | Node tests: the table's clock, event sequencer, seat rotation and state mapping; the engine proxy against the real `room-action` service |
 | `test/online-game.e2e.test.mjs` | Three players at the online table in Chromium against the local stack: `npm run test:e2e:game` |
+| `.github/workflows/deploy.yml`, `scripts/package-site.mjs` | Deploy on every push to `main`: migrations and functions, then the static site on GitHub Pages (MIND-07, see [DEPLOY.md](./DEPLOY.md)) |
+| `.github/workflows/smoke.yml`, `scripts/smoke-online.mjs` | Smoke test: two players play level 1 against a project; the p95 `room-action` round trip must be ≤ 400 ms |
+| `test/package-site.test.mjs`, `test/workflows.test.js`, `test/site.e2e.test.mjs` | The packaging, the deploy workflow's contract, and the packaged site under its CSP in Chromium |
 
 ## Schema
 
@@ -523,6 +526,9 @@ You need Docker and Node 20+. Run `npm install` once; it installs the Supabase C
 | `npm run test:integration` | The rooms rules on the local database. It uses `ROOMS_TEST_DB_URL`, which defaults to the local stack |
 | `npm run test:e2e` | Two anonymous players play Classic level 1 over HTTP against the running local stack. The URL and anon key come from `supabase status`, or from `SUPABASE_E2E_URL` / `SUPABASE_E2E_ANON_KEY` |
 | `npm run test:e2e:lobby` | The online lobby in Chromium against the running local stack: create, share link, join, Presence, start, a full room, errors, the mobile layout, and no request in offline play. Run `npx playwright install chromium` once first. `ONLINE_E2E_SCREENSHOTS=<dir>` also saves lobby screenshots |
+| `npm run smoke` | The smoke test against any project: `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` (for the local stack, `API_URL` and `PUBLISHABLE_KEY` from `npx supabase status`). Prints p50/p95; fails above `SMOKE_MAX_P95_MS` (400) |
+| `npm run package-site` | Builds the deployable `_site/` from the same two variables |
+| `npm run test:e2e:site` | Packages the site against the running local stack and checks it in Chromium: online play under the Content-Security-Policy with no violation, and offline play from `file://` with no request |
 | `npm run test:e2e:game` | Three players at the online table in Chromium against the running local stack: Classic levels 1–2, a mistake, stars (yes, no, timeout), a reload, a disconnect with pause / rejoin / resume / End game, Reverse to game over and rematch, Dual, Blind, reconnecting, and 360×640. It fast-forwards one pause by 3 minutes through the database (`ROOMS_TEST_DB_URL`, the local stack by default). `ONLINE_E2E_RECORD=<dir>` also saves frames of a 2-player level |
 | `npm run sync-engine` | Copies `engine/mind-engine.js` to `supabase/functions/_shared/mind-engine.js`. Run it after every engine change |
 | `npm run db:stop` | Stops the stack |
@@ -542,10 +548,13 @@ curl -s "$API/functions/v1/rooms" -H "Authorization: Bearer $TOKEN" -H 'Content-
   -d '{"action":"create","nickname":"Ayşe"}'
 ```
 
-CI (`.github/workflows/ci.yml`) has two jobs:
+CI (`.github/workflows/ci.yml`) has three jobs:
 
 - `test` runs `npm test`.
-- `db-tests` runs `supabase start` (with Realtime, but without Storage, Studio and the other services the tests don't need) and waits for Realtime's `realtime.messages` partitions. It then runs `supabase test db`, `npm run test:integration`, `npm run test:e2e` and, after `npx playwright install --with-deps chromium`, `npm run test:e2e:lobby` and `npm run test:e2e:game`.
+- `db-tests` runs `supabase start` (with Realtime, but without Storage, Studio and the other services the tests don't need) and waits for Realtime's `realtime.messages` partitions. It then runs `npm run smoke` against the fresh stack, `supabase test db`, `npm run test:integration`, `npm run test:e2e` and, after `npx playwright install --with-deps chromium`, `npm run test:e2e:lobby`, `npm run test:e2e:game` and `npm run test:e2e:site`.
+- `actionlint` lints every workflow file with the official `rhysd/actionlint` image.
+
+Deploying to a real project is a separate workflow; see [DEPLOY.md](./DEPLOY.md).
 
 ## Secrets (I8)
 
@@ -564,7 +573,7 @@ Expected matches, none of them a secret:
 - this page and the issue texts in `docs/online/`;
 - the env-var **name** `SUPABASE_SERVICE_ROLE_KEY` read in `supabase/functions/rooms/index.ts` and `supabase/functions/room-action/index.ts`;
 - the **role name** `service_role` in the `grant execute … to service_role` of the MIND-04 migration and in its pgTAP test;
-- fake keys (`sb_secret_example`, a JWT with role `service_role`) in `test/online-core.test.js` and the search pattern in `test/online-wiring.test.js`, which check that the front-end refuses such keys and never contains one;
+- fake keys (`sb_secret_example`, `sb_secret_abcdef`, `sb_secret_TOPSECRET`, JWTs with role `service_role`) in `test/online-core.test.js` and `test/package-site.test.mjs`, and the search pattern in `test/online-wiring.test.js`, which check that the front-end and the deploy refuse such keys and never contain or print one;
 - a comment in the CLI-generated `supabase/config.toml` that lists the API roles.
 
 Anything else is a leak: rotate the key, then remove it from the history.

@@ -809,6 +809,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       'faq.9.a': 'Yes, the box says 8+. Because it\'s cooperative, nobody loses alone, and kids are often better at sensing rhythm than adults. Use the "Relaxed" rhythm for younger players.',
       'faq.10.q': 'Can we stop in the middle of a level?',
       'faq.10.a': 'Yes. Any player can call a refocus: everyone puts a hand down again and you restart the silence. In this app, use "Refocus" or press R.',
+      'faq.11.q': 'What do you store when we play online?',
+      'faq.11.a': 'We only store a nickname and game data. Rooms are deleted 24 hours after the last activity. There are no accounts and no email.',
 
       'journal.title': 'Played log & challenges',
       'journal.sub': 'Track your games, unlock challenges and beat your best level.',
@@ -1038,6 +1040,8 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
       'faq.9.a': 'Evet, kutuda 8+ yazıyor. Kooperatif olduğu için kimse tek başına kaybetmez ve çocuklar ritmi çoğu zaman yetişkinlerden iyi hisseder. Küçükler için "Rahat" ritmi seçin.',
       'faq.10.q': 'Seviyenin ortasında durabilir miyiz?',
       'faq.10.a': 'Evet. Herhangi bir oyuncu yeniden odaklanma isteyebilir: herkes elini tekrar masaya koyar ve sessizlik yeniden başlar. Bu uygulamada "Odaklan" düğmesini ya da R tuşunu kullan.',
+      'faq.11.q': 'Çevrimiçi oynarken ne saklıyorsunuz?',
+      'faq.11.a': 'Yalnızca bir takma ad ve oyun verilerini saklıyoruz. Odalar son etkinlikten 24 saat sonra silinir. Hesap yok, e-posta yok.',
 
       'journal.title': 'Oyun günlüğü ve görevler',
       'journal.sub': 'Oyunlarını takip et, görevleri aç, en iyi seviyeni geç.',
@@ -2630,6 +2634,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
   const REVIEW_TAGS = ['nongamers', 'kids', 'best3', 'icebreaker', 'gift', 'short'];
   const CHALLENGE_ORDER = ['first', 'aha', 'flawless', 'lvl6', 'kid', 'reverse', 'blind', 'extreme', 'nostar', 'club12', 'full', 'regular'];
   const STORE_URL = 'https://boardgamecolony.com/game/the-mind';
+  const FAQ_COUNT = 11;
 
   const App = {
     screen: null,
@@ -3092,7 +3097,7 @@ table.log th { color: var(--muted); font-size: 12px; text-transform: uppercase; 
           <h2>❓ ${t('faq.title')}</h2>
           <p class="sub">${t('faq.sub')}</p>
           <div class="faq">
-            ${Array.from({ length: 10 }, (_, i) => `<details ${i === 0 ? 'open' : ''}><summary>${t('faq.' + (i + 1) + '.q')}</summary><p>${t('faq.' + (i + 1) + '.a')}</p></details>`).join('')}
+            ${Array.from({ length: FAQ_COUNT }, (_, i) => `<details ${i === 0 ? 'open' : ''}><summary>${t('faq.' + (i + 1) + '.q')}</summary><p>${t('faq.' + (i + 1) + '.a')}</p></details>`).join('')}
           </div>
           <div class="row" style="display:flex;gap:10px;margin-top:20px;flex-wrap:wrap">
             <button class="btn hot" data-nav="setup">▶ ${t('home.play')}</button>

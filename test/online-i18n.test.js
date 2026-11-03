@@ -63,3 +63,14 @@ test('the online-play-off message reads as the issue asks', () => {
   assert.equal(STR.en['online.err.rateLimited'], 'Too many tries — wait a minute.');
   assert.equal(STR.en['online.err.network'], "Can't reach the server.");
 });
+
+test('MIND-07: every FAQ entry exists in TR and EN, the page shows all of them, and the online privacy entry is there', () => {
+  const faq = (lang) => Object.keys(STR[lang]).filter((k) => /^faq\.\d+\.[qa]$/.test(k)).sort();
+  assert.deepEqual(faq('tr'), faq('en'));
+  const count = faq('en').length / 2;
+  const m = /const FAQ_COUNT = (\d+);/.exec(HTML);
+  assert.ok(m, 'index.html defines FAQ_COUNT');
+  assert.equal(Number(m[1]), count, 'the FAQ screen shows every entry');
+  assert.match(STR.en['faq.11.a'], /only store a nickname and game data\. Rooms are deleted 24 hours after the last activity\. There are no accounts and no email\./);
+  assert.match(STR.tr['faq.11.a'], /24 saat sonra silinir.*Hesap yok, e-posta yok\./);
+});

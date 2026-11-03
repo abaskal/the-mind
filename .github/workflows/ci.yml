@@ -37,12 +37,17 @@ jobs:
       # Realtime owns realtime.messages and creates its daily partitions, which the room channel pgTAP test needs.
       - name: Wait for the realtime.messages partitions
         run: |
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             n=$(docker exec supabase_db_the-mind psql -U postgres -tAc "select count(*) from pg_inherits where inhparent = 'realtime.messages'::regclass")
             [ "${n:-0}" -gt 0 ] && exit 0
             sleep 2
           done
           echo "Realtime created no realtime.messages partition" && exit 1
+      # Two anonymous players play level 1 against the fresh local stack; p95 of the room-action round trips.
+      - name: npm run smoke (smoke test on the local stack)
+        run: |
+          eval "$(supabase status -o env | grep -E '^(API_URL|PUBLISHABLE_KEY)=')"
+          SUPABASE_URL="$API_URL" SUPABASE_PUBLISHABLE_KEY="$PUBLISHABLE_KEY" npm run smoke
       - run: supabase test db
       - run: npm run test:integration
       - name: npm run test:e2e (two players over HTTP)
@@ -58,3 +63,16 @@ jobs:
         run: |
           eval "$(supabase status -o env | grep -E '^(API_URL|ANON_KEY|DB_URL)=')"
           SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$ANON_KEY" ROOMS_TEST_DB_URL="$DB_URL" npm run test:e2e:game
+      - name: npm run test:e2e:site (the packaged site under its CSP, and offline from file://)
+        run: |
+          eval "$(supabase status -o env | grep -E '^(API_URL|PUBLISHABLE_KEY)=')"
+          SUPABASE_E2E_URL="$API_URL" SUPABASE_E2E_ANON_KEY="$PUBLISHABLE_KEY" npm run test:e2e:site
+
+  # The workflow files themselves (deploy.yml, smoke.yml, ci.yml), with the official actionlint image.
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" --workdir /repo rhysd/actionlint:1.7.12 -color
